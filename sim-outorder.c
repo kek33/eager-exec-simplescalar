@@ -575,6 +575,16 @@ static int fork_penalty; /* penalty given for forking a branch */
 static int max_lines_per_thread; /* maximum number of lines for a thread to retrieve when misses insn cache */
 static int max_fetches_before_switch; /* max fetches for given thread before switching */
 int available_threads;
+int current_fetching_thread = 0;
+
+struct thread_state
+{
+    md_addr_type current_pc;
+    int is_valid;
+
+}
+
+static int fork_thread(md_addr_t newPC, int parent_thread)
 
 
 /* register simulator-specific options */
@@ -1552,6 +1562,12 @@ struct RUU_station {
      operands are known to be read (see lsq_refresh() for details on
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
+
+  int thread_id; /* id of the current thread */
+  int is_fork; /* is this a forked path? */
+  int is_against_prediction; /* is this against the branch prediction? */
+  int squashed; /* if this is squashed, it should not be committed - counts as nop */
+
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -2170,6 +2186,38 @@ ruu_commit(void)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
 
+      /* if the instruction is squashed, we should retire it, and it should not affect the branch predictor
+      or the branch confidence predictor */
+
+      if (rs->squashed) {
+          if (rs->ea_comp) {
+              if (LSQ_num <= 0 || !LSQ[LSQ_head].in_LSQ)
+        	    panic("RUU out of sync with LSQ");
+                /* invalidate load/store operation instance */
+          	  LSQ[LSQ_head].tag++;
+                    sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+
+          	  /* indicate to pipeline trace that this instruction retired */
+          	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
+          	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+
+          	  /* commit head of LSQ as well */
+          	  LSQ_head = (LSQ_head + 1) % LSQ_size;
+          	  LSQ_num--;
+          }
+          RUU[RUU_head].tag++;
+          /* indicate to pipeline trace that this instruction retired */
+          ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
+          ptrace_endinst(RUU[RUU_head].ptrace_seq);
+
+          /* commit head entry of RUU */
+          RUU_head = (RUU_head + 1) % RUU_size;
+          RUU_num--;
+
+          /* one more instruction committed to architected state */
+          committed++;
+      }
+
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
@@ -2307,7 +2355,8 @@ ruu_commit(void)
 /*
  *  RUU_RECOVER() - squash mispredicted microarchitecture state
  */
-
+// TODO: only squash instructions with the same thread number as the mispredict. Another
+// method will be added in order to squash an entire forked branch.
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
 static void
