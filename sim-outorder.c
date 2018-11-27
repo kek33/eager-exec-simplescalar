@@ -2215,7 +2215,6 @@ ruu_commit(void)
           RUU_num--;
 
           /* one more instruction committed to architected state */
-          committed++;
       }
 
       if (!rs->completed)
@@ -2360,7 +2359,7 @@ ruu_commit(void)
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
 static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
+ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
 {
   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
@@ -2384,6 +2383,15 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
       if (RUU_index == RUU_head)
 	panic("RUU head and tail broken");
 
+      /* if this has a different thread_id, we skip it */
+      if (RUU[RUU_index].thread_id != thread_id) {
+         if (RUU[RUU_index].ea_comp) {
+             LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+         }
+         RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+         continue;
+      }
+
       /* is this operation an effective addr calc for a load or store? */
       if (RUU[RUU_index].ea_comp)
 	{
@@ -2401,14 +2409,16 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 	  /* squash this LSQ entry */
 	  LSQ[LSQ_index].tag++;
+      LSQ[LSQ_index].squashed = TRUE;
 
 	  /* indicate in pipetrace that this instruction was squashed */
 	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
 
 	  /* go to next earlier LSQ slot */
-	  LSQ_prev_tail = LSQ_index;
+      /* No longer preemptively squashing and freeing these buffers*/
+	  //LSQ_prev_tail = LSQ_index;
 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
+	  //LSQ_num--;
 	}
 
       /* recover any resources used by this RUU operation */
@@ -2421,23 +2431,27 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
       /* squash this RUU entry */
       RUU[RUU_index].tag++;
+      RUU[RUU_index].squashed = TRUE;
 
       /* indicate in pipetrace that this instruction was squashed */
       ptrace_endinst(RUU[RUU_index].ptrace_seq);
 
       /* go to next earlier slot in the RUU */
-      RUU_prev_tail = RUU_index;
+      /* No longer preemptively moving tail of ruu when insn squashed */
+      //RUU_prev_tail = RUU_index;
       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
+      //RUU_num--;
     }
 
   /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
+  //RUU_tail = RUU_prev_tail;
+  //LSQ_tail = LSQ_prev_tail;
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
      USE_SPEC_CV bit vector */
+
+  /* TODO: Need to figure out what this does */
   BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
 
   /* FIXME: could reset functional units at squash time */
