@@ -574,15 +574,16 @@ static int max_threads; /* maximum threads allowed to run */
 static int fork_penalty; /* penalty given for forking a branch */
 static int max_lines_per_thread; /* maximum number of lines for a thread to retrieve when misses insn cache */
 static int max_fetches_before_switch; /* max fetches for given thread before switching */
-int available_threads;
 int current_fetching_thread = 0;
+int fetches_left_for_thread;
 
-struct thread_state
-{
-    md_addr_type current_pc;
-    int is_valid;
+struct thread_state {
+    md_addr_t curr_pc;		/* program counter */
+    md_addr_t next_pc;		/* next-cycle program counter */
+    int in_use; /* is this thread currently in use */
+};
 
-}
+static struct thread_state *thread_states;
 
 static int fork_thread(md_addr_t newPC, int parent_thread)
 
@@ -1564,10 +1565,9 @@ struct RUU_station {
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
 
   int thread_id; /* id of the current thread */
-  int is_fork; /* is this a forked path? */
-  int is_against_prediction; /* is this against the branch prediction? */
+  int triggers_fork; /* does this instruction trigger a fork? */
+  int fork_id; /* id of the thread that forked off of this */
   int squashed; /* if this is squashed, it should not be committed - counts as nop */
-
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -1588,10 +1588,19 @@ ruu_init(void)
   if (!RUU)
     fatal("out of virtual memory");
 
+  thread_states = calloc(max_threads, sizeof(struct thread_state));
+  if (!tread_states)
+    fatal("out of virtual memory");
+
   RUU_num = 0;
   RUU_head = RUU_tail = 0;
   RUU_count = 0;
   RUU_fcount = 0;
+
+  thread_states[0].in_use = TRUE;
+  for (int i = 1; i < max_threads; i++) {
+      thread_states[i].in_use = FALSE;
+  }
 }
 
 /* dump the contents of the RUU */
@@ -3037,10 +3046,7 @@ struct fetch_rec {
   struct bpred_update_t dir_update;	/* bpred direction update info */
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
-  int conf; /* conf pred of branch */
-  int is_fork; /* is this a forked branch */
-  int thread;
-
+  int thread_id; /* what is the thread id of this? */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -4311,8 +4317,32 @@ ruu_fetch(void)
        && !done;
        i++)
     {
-      /* fetch an instruction at the next predicted fetch address */
-      fetch_regs_PC = fetch_pred_PC;
+        // If we've reached our quota of fetches for this thread, find the next thread to run
+        if (fetches_left_for_thread == 0) {
+            int has_found_new_thread = FALSE;
+            current_fetching_thread++;
+            while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
+                if (thread_states[current_fetching_thread].in_use == TRUE) {
+                    has_found_new_thread = TRUE;
+                } else {
+                    current_fetching_thread++;
+                }
+            }
+            if (has_found_new_thread == FALSE) {
+                current_fetching_thread = 0;
+                while (has_found_new_thread == FALSE) {
+                    if (thread_states[current_fetching_thread].in_use == TRUE) {
+                        has_found_new_thread = TRUE;
+                    } else {
+                        current_fetching_thread++;
+                    }
+                }
+            }
+            fetch_regs_PC = thread_states[current_fetching_thread].curr_pc;
+        } else {
+            /* fetch an instruction at the next predicted fetch address for this thread */
+            fetch_regs_PC = fetch_pred_PC;
+        }
 
       /* is this a bogus text address? (can happen on mis-spec path) */
       if (ld_text_base <= fetch_regs_PC
@@ -4418,6 +4448,7 @@ ruu_fetch(void)
       fetch_data[fetch_tail].pred_PC = fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].thread_id = current_fetching_thread;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
@@ -4623,6 +4654,11 @@ sim_main(void)
   fetch_pred_PC = regs.regs_PC;
   regs.regs_PC = regs.regs_PC - sizeof(md_inst_t);
 
+  /* initialize threads */
+  thread_states[0].curr_pc = fetch_regs_PC;
+  thread_states[0].pred_pc = fetch_pred_PC;
+  fetches_left_for_thread = max_fetches_before_switch;
+
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
      to eliminate this/next state synchronization and relaxation problems */
   for (;;)
@@ -4636,6 +4672,7 @@ sim_main(void)
 	panic("LSQ_head/LSQ_tail wedged");
 
       /* check if pipetracing is still active */
+      // TODO: change regs.regs_PC
       ptrace_check_active(regs.regs_PC, sim_num_insn, sim_cycle);
 
       /* indicate new cycle in pipetrace */
