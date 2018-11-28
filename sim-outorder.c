@@ -574,6 +574,8 @@ static int max_threads; /* maximum threads allowed to run */
 static int fork_penalty; /* penalty given for forking a branch */
 static int max_lines_per_thread; /* maximum number of lines for a thread to retrieve when misses insn cache */
 static int max_fetches_before_switch; /* max fetches for given thread before switching */
+static int multiple_robs; /* should there be multiple ROBS, or a single ROB? */
+static int ideal_squashing; /* should we assume ideal squashing, or leave holes in ROB? */
 int current_fetching_thread = 0;
 int fetches_left_for_thread;
 
@@ -911,6 +913,15 @@ sim_reg_options(struct opt_odb_t *odb)
          "maximum number of insns fetched for a single thread before switching",
          &max_fetches_before_switch, /* default */1,
          /* print */TRUE, /* format */NULL);
+
+  opt_reg_flag(odb, "-multiple_robs",
+        "should each thread get its own rob",
+        &multiple_robs, /* default */FALSE, /* print */TRUE, NULL);
+
+  opt_reg_flag(odb, "-ideal_squashing",
+        "pertinent to single rob, should we leave holes in rob after squash or shrink rob?",
+        &ideal_squashing, /* default */FALSE, /* print */TRUE, NULL);
+
 }
 
 /* check simulator-specific option values */
@@ -2197,8 +2208,8 @@ ruu_commit(void)
 
       /* if the instruction is squashed, we should retire it, and it should not affect the branch predictor
       or the branch confidence predictor */
-
-      if (rs->squashed) {
+      // TODO: should a nop count as a commit?
+      if (rs->squashed && !ideal_squashing) {
           if (rs->ea_comp) {
               if (LSQ_num <= 0 || !LSQ[LSQ_head].in_LSQ)
         	    panic("RUU out of sync with LSQ");
@@ -2467,6 +2478,7 @@ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
 }
 
 
+
 /*
  *  RUU_WRITEBACK() - instruction result writeback pipeline stage
  */
@@ -2495,14 +2507,27 @@ ruu_writeback(void)
       /* operation has completed */
       rs->completed = TRUE;
 
-      /* does this operation reveal a mis-predicted branch? */
-      if (rs->recover_inst)
+      /* if this operation triggers a fork, something must be squased */
+      if (rs->triggers_fork) {
+          if (rs->in_LSQ)
+            panic("load or store should not be triggering fork");
+          /* if the branch is taken, should squash the current thread (up to the branch)
+          otherwise, squash the forking thread */
+          if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+              ruu_recover(rs - RUU, rs->thread_id);
+              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+          } else {
+              ruu_recover(rs-RUU, rs->fork_id);
+              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+          }
+          // TODO: branch prediction recovery
+      } else if (rs->recover_inst) /* This branch mispredicted but didn't fork */
 	{
 	  if (rs->in_LSQ)
 	    panic("mis-predicted load or store?!?!?");
 
 	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
+	  ruu_recover(rs - RUU, rs->thread_id);
 	  tracer_recover();
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
@@ -2510,7 +2535,7 @@ ruu_writeback(void)
 	  ruu_fetch_issue_delay = ruu_branch_penalty;
 
 	  /* continue writeback of the branch/control instruction */
-	}
+    }
 
       /* if we speculatively update branch-predictor, do it here */
       if (pred
@@ -2627,6 +2652,7 @@ ruu_writeback(void)
    been satisfied, this is accomplished by walking the LSQ for loads, looking
    for blocking memory dependency condition (e.g., earlier store with an
    unknown address) */
+
 #define MAX_STD_UNKNOWNS		64
 static void
 lsq_refresh(void)
@@ -2641,6 +2667,9 @@ lsq_refresh(void)
        i < LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
+      if (LSQ[index].squashed) {
+          continue;
+      }
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
