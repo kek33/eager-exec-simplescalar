@@ -579,6 +579,7 @@ int fetches_left_for_thread;
 struct thread_state {
     md_addr_t curr_pc;		/* program counter */
     md_addr_t next_pc;		/* next-cycle program counter */
+    int parent_fork_counters[MAX_THREADS]; /* Shows the fork counter of every thread. This is -1 if thread is not parent. */
     int in_use; /* is this thread currently in use */
 };
 static struct thread_state *thread_states;
@@ -1539,6 +1540,12 @@ struct RUU_station {
      operands are known to be read (see lsq_refresh() for details on
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
+
+  int thread_id; /* id of the current thread */
+  int triggers_fork; /* does this instruction trigger a fork? */
+  int fork_id; /* id of the thread that forked off of this */
+  int fork_counter; /* count the number of forks this thread has created at this point (for lsq) */
+  int squashed; /* if this is squashed, it should not be committed - counts as nop */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -2071,7 +2078,6 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
 /* the create vector, NOTE: speculative copy on write storage provided
    for fast recovery during wrong path execute (see tracer_recover() for
    details on this process */
-static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
 static struct CV_link create_vector[MAX_THREADS][MD_TOTAL_REGS];
 static struct CV_link spec_create_vector[MAX_THREADS][MD_TOTAL_REGS];
 
@@ -2101,19 +2107,18 @@ static void
 cv_init(void)
 {
   int i;
+  int j;
 
   /* initially all registers are valid in the architected register file,
      i.e., the create vector entry is CVLINK_NULL */
-  for (i=0; i < MD_TOTAL_REGS; i++)
-    {
-      create_vector[i] = CVLINK_NULL;
-      create_vector_rt[i] = 0;
-      spec_create_vector[i] = CVLINK_NULL;
-      spec_create_vector_rt[i] = 0;
-    }
-
-  /* all create vector entries are non-speculative */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
+  for (i=0; i < MAX_THREADS; i++) {
+      for (j=0; j < MD_TOTAL_REGS; j++) {
+          create_vector[i][j] = CVLINK_NULL;
+          create_vector_rt[i][j] = 0;
+          spec_create_vector[i][j] = CVLINK_NULL;
+          spec_create_vector_rt[i][j] = 0;
+      }
+  }
 }
 
 /* dump the contents of the create vector */
@@ -2159,11 +2164,45 @@ ruu_commit(void)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
 
+      /* If this is squashed, change head pointer and move on */
+      if (rs->squased) {
+          if (RUU[RUU_head].ea_comp) {
+              if (!LSQ[LSQ_head].squased) {
+                  panic("ruu and lsq squashing out of sync");
+              }
+              LSQ[LSQ_head].tag++;
+                  sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+
+        	  /* indicate to pipeline trace that this instruction retired */
+        	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
+        	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+
+        	  /* commit head of LSQ as well */
+        	  LSQ_head = (LSQ_head + 1) % LSQ_size;
+        	  LSQ_num--;
+          }
+          RUU[RUU_head].tag++;
+          sim_slip += (sim_cycle - RUU[RUU_head].slip);
+          ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
+          ptrace_endinst(RUU[RUU_head].ptrace_seq);
+
+          /* commit head entry of RUU */
+          RUU_head = (RUU_head + 1) % RUU_size;
+          RUU_num--;
+
+          /* one more instruction committed to architected state */
+          committed++;
+      }
+
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
 	  break;
 	}
+      // The forked thread off this is the correct one, so this can retire now
+      if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+            thread_states[rs->thread_id].in_use = FALSE;
+      }
 
       /* default commit events */
       events = 0;
@@ -2378,8 +2417,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
      USE_SPEC_CV bit vector */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
-
+  // TODO: revert
   /* FIXME: could reset functional units at squash time */
 }
 
@@ -2390,6 +2428,12 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 /* forward declarations */
 static void tracer_recover(void);
+
+static void
+squash_full_thread(int thread_id) {
+
+}
+
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2411,6 +2455,29 @@ ruu_writeback(void)
 
       /* operation has completed */
       rs->completed = TRUE;
+
+      // if this instruction got squashed after being placed in the event queue
+      if (rs->squashed) {
+          continue;
+      }
+
+      // if this is an instruction that triggers a fork, something must be squashed
+      if (rs->triggers_fork) {
+          if (rs->in_LSQ)
+            panic("load or store should not be triggering fork");
+
+          /* if the branch is taken, should squash the current thread (up to the branch)
+          otherwise, squash the forking thread */
+          if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+              ruu_recover(rs - RUU, rs->thread_id);
+              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+          } else {
+              ruu_recover(rs-RUU, rs->fork_id);
+              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+          }
+          // TODO: branch prediction recovery
+
+      }
 
       /* does this operation reveal a mis-predicted branch? */
       if (rs->recover_inst)
@@ -2548,16 +2615,26 @@ ruu_writeback(void)
 static void
 lsq_refresh(void)
 {
-  int i, j, index, n_std_unknowns;
-  md_addr_t std_unknowns[MAX_STD_UNKNOWNS];
+  int i, j, index;
+  md_addr_t std_unknowns[max_threads][MAX_STD_UNKNOWNS];
+  int n_std_unknowns[max_threads];
+  for (i=0; i < max_threads; i++) {
+    n_std_unknowns[i] = 0;
+  }
+  int still_valid[max_threads];
+  for (i=0 ; i < max_threads; i++) {
+      still_valid[i] = TRUE;
+  }
 
   /* scan entire queue for ready loads: scan from oldest instruction
      (head) until we reach the tail or an unresolved store, after which no
      other instruction will become ready */
-  for (i=0, index=LSQ_head, n_std_unknowns=0;
+  for (i=0, index=LSQ_head;
        i < LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
+      int curr_thread_id = LSQ[index].thread_id;
+      int curr_fork_counter = LSQ[index].fork_counter;
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
@@ -2565,9 +2642,17 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
+        int test_thread;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              still_valid[test_thread] = FALSE;
+            }
+        }
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
 	      /* sta unknown, blocks all later loads, stop search */
-	      break;
+	      //break;
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
@@ -2575,18 +2660,28 @@ lsq_refresh(void)
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
 		 very small */
-	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
-		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
-	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
+
+        int test_thread;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              if (n_std_unknowns[test_thread] == MAX_STD_UNKNOWNS)
+      		      fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
+              std_unknowns[test_thread][n_std_unknowns[test_thread]++] = LSQ[index].addr;
+            }
+        }
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
-	      /* a later STD known hides an earlier STD unknown */
-	      for (j=0; j<n_std_unknowns; j++)
-		{
-		  if (std_unknowns[j] == /* STA/STD known */LSQ[index].addr)
-		    std_unknowns[j] = /* bogus addr */0;
-		}
+        int test_thread;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          for (j=0; j < n_std_unknowns[test_thread]; j++) {
+            if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+              std_unknowns[j] = 0;
+            }
+          }
+        }
 	    }
 	}
 
@@ -2597,19 +2692,16 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
-	  /* no STA unknown conflict (because we got to this check), check for
-	     a STD unknown conflict */
-	  for (j=0; j<n_std_unknowns; j++)
-	    {
-	      /* found a relevant STD unknown? */
-	      if (std_unknowns[j] == LSQ[index].addr)
-		break;
-	    }
-	  if (j == n_std_unknowns)
-	    {
-	      /* no STA or STD unknown conflicts, put load on ready queue */
-	      readyq_enqueue(&LSQ[index]);
-	    }
+    if (!LSQ[index].squashed == TRUE) {
+      for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+        if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+          break;
+        }
+      }
+      if (j == n_std_unknowns) {
+        readyq_enqueue(&LSQ[index]);
+      }
+    }
 	}
     }
 }
