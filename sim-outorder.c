@@ -2,20 +2,20 @@
 
 /* SimpleScalar(TM) Tool Suite
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
- * All Rights Reserved. 
- * 
+ * All Rights Reserved.
+ *
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
  * YOU ARE AGREEING TO THESE TERMS AND CONDITIONS.
- * 
+ *
  * No portion of this work may be used by any commercial entity, or for any
  * commercial purpose, without the prior, written permission of SimpleScalar,
  * LLC (info@simplescalar.com). Nonprofit and noncommercial use is permitted
  * as described below.
- * 
+ *
  * 1. SimpleScalar is provided AS IS, with no warranty of any kind, express
  * or implied. The user of the program accepts full responsibility for the
  * application of the program and the use of any results.
- * 
+ *
  * 2. Nonprofit and noncommercial use is encouraged. SimpleScalar may be
  * downloaded, compiled, executed, copied, and modified solely for nonprofit,
  * educational, noncommercial research, and noncommercial scholarship
@@ -24,13 +24,13 @@
  * solely for nonprofit, educational, noncommercial research, and
  * noncommercial scholarship purposes provided that this notice in its
  * entirety accompanies all copies.
- * 
+ *
  * 3. ALL COMMERCIAL USE, AND ALL USE BY FOR PROFIT ENTITIES, IS EXPRESSLY
  * PROHIBITED WITHOUT A LICENSE FROM SIMPLESCALAR, LLC (info@simplescalar.com).
- * 
+ *
  * 4. No nonprofit user may place any restrictions on the use of this software,
  * including as modified by the user, by any other authorized user.
- * 
+ *
  * 5. Noncommercial and nonprofit users may distribute copies of SimpleScalar
  * in compiled or executable form as set forth in Section 2, provided that
  * either: (A) it is accompanied by the corresponding machine-readable source
@@ -40,11 +40,11 @@
  * must permit verbatim duplication by anyone, or (C) it is distributed by
  * someone who received only the executable form, and is accompanied by a
  * copy of the written offer of source code.
- * 
+ *
  * 6. SimpleScalar was developed by Todd M. Austin, Ph.D. The tool suite is
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
- * 
+ *
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
 
@@ -569,11 +569,28 @@ dtlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 }
 
 
+/* variables necessary for dual eager execution */
+static int max_threads; /* maximum threads allowed to run */
+static int fork_penalty; /* penalty given for forking a branch */
+static int max_fetches_before_switch; /* max fetches for given thread before switching */
+static int ideal_squashing; /* should we assume ideal squashing, or leave holes in ROB? */
+int current_fetching_thread = 0;
+int fetches_left_for_thread;
+struct thread_state {
+    md_addr_t curr_pc;		/* program counter */
+    md_addr_t next_pc;		/* next-cycle program counter */
+    int in_use; /* is this thread currently in use */
+};
+static struct thread_state *thread_states;
+static int fork_thread(md_addr_t newPC, int parent_thread)
+
+
+
 /* register simulator-specific options */
 void
 sim_reg_options(struct opt_odb_t *odb)
 {
-  opt_reg_header(odb, 
+  opt_reg_header(odb,
 "sim-outorder: This simulator implements a very detailed out-of-order issue\n"
 "superscalar processor with a two-level memory system and speculative\n"
 "execution support.  This simulator is a performance simulator, tracking the\n"
@@ -1152,25 +1169,25 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (res_ialu > MAX_INSTS_PER_CLASS)
     fatal("number of integer ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IALU_INDEX].quantity = res_ialu;
-  
+
   if (res_imult < 1)
     fatal("number of integer multiplier/dividers must be greater than zero");
   if (res_imult > MAX_INSTS_PER_CLASS)
     fatal("number of integer mult/div's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IMULT_INDEX].quantity = res_imult;
-  
+
   if (res_memport < 1)
     fatal("number of memory system ports must be greater than zero");
   if (res_memport > MAX_INSTS_PER_CLASS)
     fatal("number of memory system ports must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_MEMPORT_INDEX].quantity = res_memport;
-  
+
   if (res_fpalu < 1)
     fatal("number of floating point ALU's must be greater than zero");
   if (res_fpalu > MAX_INSTS_PER_CLASS)
     fatal("number of floating point ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_FPALU_INDEX].quantity = res_fpalu;
-  
+
   if (res_fpmult < 1)
     fatal("number of floating point multiplier/dividers must be > zero");
   if (res_fpmult > MAX_INSTS_PER_CLASS)
@@ -2049,33 +2066,35 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
 /* size of the create vector (one entry per architected register) */
 #define CV_BMAP_SZ              (BITMAP_SIZE(MD_TOTAL_REGS))
 
+#define MAX_THREADS 16
+
 /* the create vector, NOTE: speculative copy on write storage provided
    for fast recovery during wrong path execute (see tracer_recover() for
    details on this process */
 static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
-static struct CV_link create_vector[MD_TOTAL_REGS];
-static struct CV_link spec_create_vector[MD_TOTAL_REGS];
+static struct CV_link create_vector[MAX_THREADS][MD_TOTAL_REGS];
+static struct CV_link spec_create_vector[MAX_THREADS][MD_TOTAL_REGS];
+
 
 /* these arrays shadow the create vector an indicate when a register was
    last created */
-static tick_t create_vector_rt[MD_TOTAL_REGS];
-static tick_t spec_create_vector_rt[MD_TOTAL_REGS];
+static tick_t create_vector_rt[MAX_THREADS][MD_TOTAL_REGS];
+static tick_t spec_create_vector_rt[MAX_THREADS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
-#define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector[N]                \
-				 : create_vector[N])
+#define CREATE_VECTOR(THREAD, N)        spec_mode[THREAD]\
+				 ? spec_create_vector[THREAD][N]                \
+				 : create_vector[THREAD][N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector_rt[N]             \
-				 : create_vector_rt[N])
+#define CREATE_VECTOR_RT(THREAD, N)     spec_mode[THREAD]\
+				 ? spec_create_vector_rt[THREAD][N]             \
+				 : create_vector_rt[THREAD][N])
 
 /* set a create vector entry */
-#define SET_CREATE_VECTOR(N, L) (spec_mode                              \
-				 ? (BITMAP_SET(use_spec_cv, CV_BMAP_SZ, (N)),\
-				    spec_create_vector[N] = (L))        \
-				 : (create_vector[N] = (L)))
+#define SET_CREATE_VECTOR(THREAD, N, L) (spec_mode[THREAD]            \
+				 ? spec_create_vector[THREAD][N] = (L))        \
+				 : (create_vector[THREAD][N] = (L)))
 
 /* initialize the create vector */
 static void
@@ -2213,7 +2232,7 @@ ruu_commit(void)
 	  /* invalidate load/store operation instance */
 	  LSQ[LSQ_head].tag++;
           sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
-   
+
 	  /* indicate to pipeline trace that this instruction retired */
 	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
 	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
@@ -2319,7 +2338,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 	      /* blow away the consuming op list */
 	      LSQ[LSQ_index].odep_list[i] = NULL;
 	    }
-      
+
 	  /* squash this LSQ entry */
 	  LSQ[LSQ_index].tag++;
 
@@ -2339,7 +2358,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 	  /* blow away the consuming op list */
 	  RUU[RUU_index].odep_list[i] = NULL;
 	}
-      
+
       /* squash this RUU entry */
       RUU[RUU_index].tag++;
 
@@ -2773,7 +2792,7 @@ ruu_issue(void)
 			  eventq_queue_event(rs, sim_cycle + fu->oplat);
 
 			  /* entered execute stage, indicate in pipe trace */
-			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE, 
+			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE,
 					  rs->ea_comp ? PEV_AGEN : 0);
 			}
 
@@ -2853,17 +2872,17 @@ ruu_issue(void)
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
 static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
-static md_gpr_t spec_regs_R;
+static md_gpr_t spec_regs_R[MAX_THREADS];
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
-static md_fpr_t spec_regs_F;
+static md_fpr_t spec_regs_F[MAX_THREADS];
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
-static md_ctrl_t spec_regs_C;
+static md_ctrl_t spec_regs_C[MAX_THREADS];
 
 /* dump speculative register state */
 static void
@@ -3407,13 +3426,13 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* general purpose register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
-				 ? spec_regs_R[N]                       \
+#define GPR(N)                  ((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_R[thread_id][N]                       \
 				 : regs.regs_R[N])
-#define SET_GPR(N,EXPR)         (spec_mode				\
-				 ? ((spec_regs_R[N] = (EXPR)),		\
+#define SET_GPR(N,EXPR)         ((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_R[thread_id][N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
-				    spec_regs_R[N])			\
+				    spec_regs_R[thread_id][N])			\
 				 : (regs.regs_R[N] = (EXPR)))
 
 #if defined(TARGET_PISA)
@@ -3421,26 +3440,26 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_L(N)                ((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_F.l[(N)]                   \
 				 : regs.regs_F.l[(N)])
-#define SET_FPR_L(N,EXPR)       (spec_mode				\
+#define SET_FPR_L(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.l[(N)])			\
 				 : (regs.regs_F.l[(N)] = (EXPR)))
-#define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_F(N)                ((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_F.f[(N)]                   \
 				 : regs.regs_F.f[(N)])
-#define SET_FPR_F(N,EXPR)       (spec_mode				\
+#define SET_FPR_F(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.f[(N)])			\
 				 : (regs.regs_F.f[(N)] = (EXPR)))
-#define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_D(N)                ((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_F.d[(N) >> 1]              \
 				 : regs.regs_F.d[(N) >> 1])
-#define SET_FPR_D(N,EXPR)       (spec_mode				\
+#define SET_FPR_D(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.d[(N) >> 1])		\
@@ -3449,26 +3468,26 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
+#define HI			((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_C.hi			\
 				 : regs.regs_C.hi)
-#define SET_HI(EXPR)		(spec_mode				\
+#define SET_HI(EXPR)		((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_C.hi = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
 				    spec_regs_C.hi)			\
 				 : (regs.regs_C.hi = (EXPR)))
-#define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
+#define LO			((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_C.lo			\
 				 : regs.regs_C.lo)
-#define SET_LO(EXPR)		(spec_mode				\
+#define SET_LO(EXPR)		((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_C.lo = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
 				    spec_regs_C.lo)			\
 				 : (regs.regs_C.lo = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
+#define FCC			((thread_in_spec_mode == TRUE)\
 				 ? spec_regs_C.fcc			\
 				 : regs.regs_C.fcc)
-#define SET_FCC(EXPR)		(spec_mode				\
+#define SET_FCC(EXPR)		((thread_in_spec_mode == TRUE)				\
 				 ? ((spec_regs_C.fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
 				    spec_regs_C.fcc)			\
@@ -3479,49 +3498,49 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.q[(N)]                   \
+#define FPR_Q(N)		((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_F[thread_id].q[(N)]                   \
 				 : regs.regs_F.q[(N)])
-#define SET_FPR_Q(N,EXPR)	(spec_mode				\
-				 ? ((spec_regs_F.q[(N)] = (EXPR)),	\
+#define SET_FPR_Q(N,EXPR)	((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_F[thread_id].q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.q[(N)])			\
+				    spec_regs_F[thread_id].q[(N)])			\
 				 : (regs.regs_F.q[(N)] = (EXPR)))
-#define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.d[(N)]			\
+#define FPR(N)			((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_F[thread_id].d[(N)]			\
 				 : regs.regs_F.d[(N)])
-#define SET_FPR(N,EXPR)		(spec_mode				\
-				 ? ((spec_regs_F.d[(N)] = (EXPR)),	\
+#define SET_FPR(N,EXPR)		((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_F[thread_id].d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.d[(N)])			\
+				    spec_regs_F[thread_id].d[(N)])			\
 				 : (regs.regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
-				 ? spec_regs_C.fpcr			\
+#define FPCR			((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_C[thread_id].fpcr			\
 				 : regs.regs_C.fpcr)
-#define SET_FPCR(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fpcr = (EXPR)),	\
+#define SET_FPCR(EXPR)		((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_C[thread_id].fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
-				    spec_regs_C.fpcr)			\
+				    spec_regs_C[thread_id].fpcr)			\
 				 : (regs.regs_C.fpcr = (EXPR)))
-#define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
-				 ? spec_regs_C.uniq			\
+#define UNIQ			((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_C[thread_id].uniq			\
 				 : regs.regs_C.uniq)
-#define SET_UNIQ(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.uniq = (EXPR)),	\
+#define SET_UNIQ(EXPR)		((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_C[thread_id].uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
-				    spec_regs_C.uniq)			\
+				    spec_regs_C[thread_id].uniq)			\
 				 : (regs.regs_C.uniq = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+#define FCC			((thread_in_spec_mode == TRUE)\
+				 ? spec_regs_C[thread_id].fcc			\
 				 : regs.regs_C.fcc)
-#define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+#define SET_FCC(EXPR)		((thread_in_spec_mode == TRUE)				\
+				 ? ((spec_regs_C[thread_id].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
-				    spec_regs_C.fcc)			\
+				    spec_regs_C[thread_id].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #else
@@ -4277,7 +4296,7 @@ ruu_fetch(void)
 
 	  /* pre-decode instruction, used for bpred stats recording */
 	  MD_SET_OPCODE(op, inst);
-	  
+
 	  /* get the next predicted fetch address; only use branch predictor
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
