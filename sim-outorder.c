@@ -1732,6 +1732,7 @@ struct RS_link {
   struct RS_link *next;			/* next entry in list */
   struct RUU_station *rs;		/* referenced RUU resv station */
   INST_TAG_TYPE tag;			/* inst instance sequence number */
+  int squashed; /* was this instruction squashed */
   union {
     tick_t when;			/* time stamp of entry (for eventq) */
     INST_SEQ_TYPE seq;			/* inst sequence */
@@ -2549,14 +2550,14 @@ ruu_writeback(void)
 		{
 		  /* update the speculative create vector, future operations
 		     get value from later creator or architected reg file */
-		  link = spec_create_vector[rs->onames[i]];
+		  link = spec_create_vector[rs->thread_id][rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      spec_create_vector[rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[rs->onames[i]] = sim_cycle;
+		      spec_create_vector[rs->thread_id][rs->onames[i]] = CVLINK_NULL;
+		      spec_create_vector_rt[rs->thread_id][rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2565,14 +2566,14 @@ ruu_writeback(void)
 		  /* update the non-speculative create vector, future
 		     operations get value from later creator or architected
 		     reg file */
-		  link = create_vector[rs->onames[i]];
+		  link = create_vector[rs->thread_id][rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      create_vector[rs->onames[i]] = CVLINK_NULL;
-		      create_vector_rt[rs->onames[i]] = sim_cycle;
+		      create_vector[rs->thread_id][rs->onames[i]] = CVLINK_NULL;
+		      create_vector_rt[rs->thread_id][rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2762,7 +2763,7 @@ ruu_issue(void)
       next_node = node->next;
 
       /* still valid? */
-      if (RSLINK_VALID(node))
+      if (RSLINK_VALID(node) && (node->squashed == FALSE))
 	{
 	  struct RUU_station *rs = RSLINK_RS(node);
 
@@ -2822,29 +2823,28 @@ ruu_issue(void)
 			  /* for loads, determine cache access latency:
 			     first scan LSQ to see if a store forward is
 			     possible, if not, access the data cache */
-			  load_lat = 0;
+
+        // TODO: must correctly determine if this is in the LSQ_num
+        load_lat = 0;
 			  i = (rs - LSQ);
-			  if (i != LSQ_head)
-			    {
-			      for (;;)
-				{
-				  /* go to next earlier LSQ entry */
-				  i = (i + (LSQ_size-1)) % LSQ_size;
-
-				  /* FIXME: not dealing with partials! */
-				  if ((MD_OP_FLAGS(LSQ[i].op) & F_STORE)
-				      && (LSQ[i].addr == rs->addr))
-				    {
-				      /* hit in the LSQ */
-				      load_lat = 1;
-				      break;
+			  if (i != LSQ_head) {
+          for(;;) {
+            /* go to next earlier LSQ entry */
+  				  i = (i + (LSQ_size-1)) % LSQ_size;
+            /* FIXME: not dealing with partials! */
+  				  if ((MD_OP_FLAGS(LSQ[i].op) & F_STORE) && (LSQ[i].addr == rs->addr)) {
+              if (thread_states[rs->thread_id].parent_fork_counters[LSQ[i].thread_id] >= LSQ[i].fork_counter
+                || rs->thread_id == LSQ[i].thread_id) {
+                /* this hit the LSQ */
+                load_lat = 1;
+                break;
+              }
 				    }
-
-				  /* scan finished? */
-				  if (i == LSQ_head)
-				    break;
-				}
-			    }
+  				  /* scan finished? */
+  				  if (i == LSQ_head)
+  				    break;
+          }
+        }
 
 			  /* was the value store forwared from the LSQ? */
 			  if (!load_lat)
