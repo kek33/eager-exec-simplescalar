@@ -2420,7 +2420,9 @@ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
      this is accomplished by resetting all the copied-on-write bits in the
      USE_SPEC_CV bit vector */
   // TODO: fix reverting the create vector?
-  /* FIXME: could reset functional units at squash time */
+  for (int n = 0; n < MD_TOTAL_REGS; n++) {
+    spec_create_vector[thread_id][n] = create_vector[thread_id][n];
+  }
 }
 
 
@@ -3082,22 +3084,25 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
    all register value copied-on-write bitmasks are reset, and the speculative
    memory hash table is cleared */
 static void
-tracer_recover(void)
+tracer_recover(int thread_id)
 {
   int i;
   struct spec_mem_ent *ent, *ent_next;
 
   /* better be in mis-speculative trace generation mode */
-  if (!spec_mode)
+  if (!spec_mode[thread_id])
     panic("cannot recover unless in speculative mode");
 
   /* reset to non-speculative trace generation mode */
-  spec_mode = FALSE;
+  spec_mode[thread_id] = FALSE;
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
-  BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_F, F_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_C, C_BMAP_SZ);
+  //BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
+  //BITMAP_CLEAR_MAP(use_spec_F, F_BMAP_SZ);
+  //BITMAP_CLEAR_MAP(use_spec_C, C_BMAP_SZ);
+  spec_regs_R[thread_id] = regs.regs_R;
+  spec_regs_F[thread_id] = regs.regs_F;
+  spec_regs_C[thread_id] = regs.regs_C;
 
   /* reset memory state back to non-speculative state */
   /* FIXME: could version stamps be used here?!?!? */
