@@ -2016,6 +2016,10 @@ readyq_enqueue(struct RUU_station *rs)		/* RS to enqueue */
   /* node is now queued */
   if (rs->queued)
     panic("node is already queued");
+
+  if (rs->squashed)
+    panic("node is already squashed, cannot be queued");
+
   rs->queued = TRUE;
 
   /* get a free ready list node */
@@ -2165,9 +2169,9 @@ ruu_commit(void)
       struct RUU_station *rs = &(RUU[RUU_head]);
 
       /* If this is squashed, change head pointer and move on */
-      if (rs->squased) {
+      if (rs->squashed) {
           if (RUU[RUU_head].ea_comp) {
-              if (!LSQ[LSQ_head].squased) {
+              if (!LSQ[LSQ_head].squashed) {
                   panic("ruu and lsq squashing out of sync");
               }
               LSQ[LSQ_head].tag++;
@@ -2335,11 +2339,12 @@ ruu_commit(void)
 /*
  *  RUU_RECOVER() - squash mispredicted microarchitecture state
  */
-
+// NOTE: This does not walk the tail of the ruu back - the entries in the ruu are
+// simply invalidated, and remain as holes in the ruu until they can be committed.
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
 static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
+ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
 {
   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
@@ -2380,14 +2385,13 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 	  /* squash this LSQ entry */
 	  LSQ[LSQ_index].tag++;
+    LSQ[LSQ_index].squashed = TRUE;
 
 	  /* indicate in pipetrace that this instruction was squashed */
 	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
 
 	  /* go to next earlier LSQ slot */
-	  LSQ_prev_tail = LSQ_index;
 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
 	}
 
       /* recover any resources used by this RUU operation */
@@ -2400,24 +2404,21 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
       /* squash this RUU entry */
       RUU[RUU_index].tag++;
+      RUU[RUU_index].squashed = TRUE;
 
       /* indicate in pipetrace that this instruction was squashed */
       ptrace_endinst(RUU[RUU_index].ptrace_seq);
 
       /* go to next earlier slot in the RUU */
-      RUU_prev_tail = RUU_index;
       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
     }
 
   /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
      USE_SPEC_CV bit vector */
-  // TODO: revert
+  // TODO: fix reverting the create vector?
   /* FIXME: could reset functional units at squash time */
 }
 
@@ -2428,12 +2429,6 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 /* forward declarations */
 static void tracer_recover(void);
-
-static void
-squash_full_thread(int thread_id) {
-
-}
-
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2469,32 +2464,54 @@ ruu_writeback(void)
           /* if the branch is taken, should squash the current thread (up to the branch)
           otherwise, squash the forking thread */
           if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
-              ruu_recover(rs - RUU, rs->thread_id);
-              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+            ruu_recover(rs - RUU, rs->thread_id);
+            int test_thread;
+            for (test_thread = 0; test_thread < max_threads; test_thread++) {
+              if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+                ruu_recover(rs - RUU, test_thread);
+                // Free these threads and reset their parent fork pointers
+                thread_states[test_thread].in_use = FALSE;
+                for (int n = 0; n < max_threads; n++) {
+                  thread_states[test_thread].parent_fork_counters[n] = -1;
+                }
+              }
+            }
+            // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
           } else {
-              ruu_recover(rs-RUU, rs->fork_id);
+            ruu_recover(rs-RUU, rs->fork_id);
+            thread_states[rs->fork_id].in_use = FALSE;
+            for (int n = 0; n < max_threads; n++) {
+              thread_states[rs->fork_id].parent_fork_counters[n] = -1;
+            }
+            int test_thread;
+            for (test_thread = 0; test_thread < max_threads; test_thread++) {
+              if (thread_states[test_thread].parent_fork_counters[rs->fork_id] >= rs->fork_counter) {
+                ruu_recover(rs - RUU, test_thread);
+                // Free these threads and reset their parent fork pointers
+                thread_states[test_thread].in_use = FALSE;
+                for (int n = 0; n < max_threads; n++) {
+                  thread_states[test_thread].parent_fork_counters[n] = -1;
+                }
+              }
+            }
               // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
           }
           // TODO: branch prediction recovery
 
+      } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
+        if (rs->in_LSQ)
+    	    panic("mis-predicted load or store?!?!?");
+
+    	  /* recover processor state and reinit fetch to correct path */
+    	  ruu_recover(rs - RUU);
+    	  tracer_recover();
+    	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
+
+    	  /* stall fetch until I-fetch and I-decode recover */
+    	  ruu_fetch_issue_delay = ruu_branch_penalty;
+
+    	  /* continue writeback of the branch/control instruction */
       }
-
-      /* does this operation reveal a mis-predicted branch? */
-      if (rs->recover_inst)
-	{
-	  if (rs->in_LSQ)
-	    panic("mis-predicted load or store?!?!?");
-
-	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
-	  tracer_recover();
-	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
-
-	  /* stall fetch until I-fetch and I-decode recover */
-	  ruu_fetch_issue_delay = ruu_branch_penalty;
-
-	  /* continue writeback of the branch/control instruction */
-	}
 
       /* if we speculatively update branch-predictor, do it here */
       if (pred
