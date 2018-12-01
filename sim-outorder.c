@@ -73,6 +73,13 @@
 #include "dlite.h"
 #include "sim.h"
 
+
+/* Need to define these at compile time
+  sim-outorder has no way of recovering past a single level of misspeculation
+  i.e. if I misspeculate on a branch, I can't misspeculate down the next branch*/
+#define MAX_THREADS 16
+#define MAX_SPEC_LEVELS 128
+
 /*
  * This file implements a very detailed out-of-order issue superscalar
  * processor with a two-level memory system and speculative execution support.
@@ -351,12 +358,6 @@ static unsigned int inst_seq = 0;
 /* pipetrace instruction sequence counter */
 static unsigned int ptrace_seq = 0;
 
-/* speculation mode, non-zero when mis-speculating, i.e., executing
-   instructions down the wrong path, thus state recovery will eventually have
-   to occur that resets processor register and memory state back to the last
-   precise state */
-static int spec_mode = FALSE;
-
 /* cycles until fetch issue resumes */
 static unsigned ruu_fetch_issue_delay = 0;
 
@@ -579,9 +580,11 @@ int fetches_left_for_thread;
 struct thread_state {
     md_addr_t fetch_regs_PC;
     md_addr_t fetch_pred_PC;
+    int spec_level;
     int fork_counter; /* current fork counter of this thread */
     int parent_fork_counters[MAX_THREADS]; /* Shows the fork counter of every thread. This is -1 if thread is not parent. */
     int in_use; /* is this thread currently in use */
+    int keep_fetching; /* should we keep fetching from this thread */
 };
 static struct thread_state *thread_states;
 
@@ -1377,6 +1380,7 @@ static void readyq_init(void);
 static void cv_init(void);
 static void tracer_init(void);
 static void fetch_init(void);
+static void thread_states_init(void);
 
 /* initialize the simulator */
 void
@@ -1450,6 +1454,7 @@ sim_load_prog(char *fname,		/* program to load */
   readyq_init();
   ruu_init();
   lsq_init();
+  thread_states_init();
 
   /* initialize the DLite debugger */
   dlite_init(simoo_reg_obj, simoo_mem_obj, simoo_mstate_obj);
@@ -1540,6 +1545,7 @@ struct RUU_station {
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
 
   int thread_id; /* id of the current thread */
+  int spec_level;
   int triggers_fork; /* does this instruction trigger a fork? */
   int fork_id; /* id of the thread that forked off of this */
   int fork_counter; /* count the number of forks this thread has created at this point (for lsq) */
@@ -1568,6 +1574,20 @@ ruu_init(void)
   RUU_head = RUU_tail = 0;
   RUU_count = 0;
   RUU_fcount = 0;
+}
+
+static void
+thread_states_init(void) {
+  for (int i=0; i < max_threads; i++) {
+    thread_states[i].in_use = FALSE;
+    thread_states[i].spec_level = -1;
+    thread_states[i].fork_counter = 0;
+    thread_states[i].keep_fetching = TRUE;
+    for (int j=0; j < max_threads; j++) {
+      thread_states[i].parent_fork_counters[j] = -1;
+    }
+  }
+  thread_states[0].in_use = TRUE;
 }
 
 /* dump the contents of the RUU */
@@ -2076,33 +2096,31 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
 /* size of the create vector (one entry per architected register) */
 #define CV_BMAP_SZ              (BITMAP_SIZE(MD_TOTAL_REGS))
 
-#define MAX_THREADS 16
-
 /* the create vector, NOTE: speculative copy on write storage provided
    for fast recovery during wrong path execute (see tracer_recover() for
    details on this process */
 static struct CV_link create_vector[MAX_THREADS][MD_TOTAL_REGS];
-static struct CV_link spec_create_vector[MAX_THREADS][MD_TOTAL_REGS];
+static struct CV_link spec_create_vector[MAX_THREADS][MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 
 /* these arrays shadow the create vector an indicate when a register was
    last created */
 static tick_t create_vector_rt[MAX_THREADS][MD_TOTAL_REGS];
-static tick_t spec_create_vector_rt[MAX_THREADS][MD_TOTAL_REGS];
+static tick_t spec_create_vector_rt[MAX_THREADS][MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
 #define CREATE_VECTOR(THREAD, N)        spec_mode[THREAD]\
-				 ? spec_create_vector[THREAD][N]                \
+				 ? spec_create_vector[THREAD][spec_level][N]                \
 				 : create_vector[THREAD][N])
 
 /* read a create vector timestamp entry */
 #define CREATE_VECTOR_RT(THREAD, N)     spec_mode[THREAD]\
-				 ? spec_create_vector_rt[THREAD][N]             \
+				 ? spec_create_vector_rt[THREAD][spec_level][N]             \
 				 : create_vector_rt[THREAD][N])
 
 /* set a create vector entry */
 #define SET_CREATE_VECTOR(THREAD, N, L) (spec_mode[THREAD]            \
-				 ? spec_create_vector[THREAD][N] = (L))        \
+				 ? spec_create_vector[THREAD][spec_level][N] = (L))        \
 				 : (create_vector[THREAD][N] = (L)))
 
 /* initialize the create vector */
@@ -2111,6 +2129,7 @@ cv_init(void)
 {
   int i;
   int j;
+  int k;
 
   /* initially all registers are valid in the architected register file,
      i.e., the create vector entry is CVLINK_NULL */
@@ -2118,9 +2137,15 @@ cv_init(void)
       for (j=0; j < MD_TOTAL_REGS; j++) {
           create_vector[i][j] = CVLINK_NULL;
           create_vector_rt[i][j] = 0;
-          spec_create_vector[i][j] = CVLINK_NULL;
-          spec_create_vector_rt[i][j] = 0;
       }
+  }
+  for (i=0; i < MAX_THREADS; i++) {
+    for (j=0; j < MAX_SPEC_LEVELS; j++) {
+      for (k=0; k < MD_TOTAL_REGS; k++) {
+        spec_create_vector[i][j][k] = CVLINK_NULL;
+        spec_create_vector_rt[i][j][k] = 0;
+      }
+    }
   }
 }
 
@@ -2204,7 +2229,7 @@ ruu_commit(void)
 	}
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
-            thread_states[rs->thread_id].in_use = FALSE;
+        thread_states[rs->thread_id].in_use = FALSE;
       }
 
       /* default commit events */
@@ -2428,7 +2453,7 @@ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
  */
 
 /* forward declarations */
-static void tracer_recover(void);
+static void tracer_recover(struct RUU_station *rs);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2465,12 +2490,12 @@ ruu_writeback(void)
           otherwise, squash the forking thread */
           if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
             ruu_recover(rs - RUU, rs->thread_id);
-            tracer_recover(rs->thread_id);
+            clear_thread_from_ifq(rs->thread_id);
             int test_thread;
             for (test_thread = 0; test_thread < max_threads; test_thread++) {
               if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
                 ruu_recover(rs - RUU, test_thread);
-                tracer_recover(rs->thread_id);
+                clear_thread_from_ifq(rs->thread_id);
                 // Free these threads and reset their parent fork pointers
                 thread_states[test_thread].in_use = FALSE;
                 for (int n = 0; n < max_threads; n++) {
@@ -2481,7 +2506,7 @@ ruu_writeback(void)
             // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
           } else {
             ruu_recover(rs-RUU, rs->fork_id);
-            tracer_recover(rs->fork_id);
+            clear_thread_from_ifq(rs->fork_id);
             thread_states[rs->fork_id].in_use = FALSE;
             for (int n = 0; n < max_threads; n++) {
               thread_states[rs->fork_id].parent_fork_counters[n] = -1;
@@ -2490,7 +2515,7 @@ ruu_writeback(void)
             for (test_thread = 0; test_thread < max_threads; test_thread++) {
               if (thread_states[test_thread].parent_fork_counters[rs->fork_id] >= rs->fork_counter) {
                 ruu_recover(rs - RUU, test_thread);
-                tracer_recover(test_thread);
+                clear_thread_from_ifq(test_thread);
                 // Free these threads and reset their parent fork pointers
                 thread_states[test_thread].in_use = FALSE;
                 for (int n = 0; n < max_threads; n++) {
@@ -2498,17 +2523,14 @@ ruu_writeback(void)
                 }
               }
             }
-              // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
           }
-          // TODO: branch prediction recovery
-
       } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
         if (rs->in_LSQ)
     	    panic("mis-predicted load or store?!?!?");
 
     	  /* recover processor state and reinit fetch to correct path */
     	  ruu_recover(rs - RUU);
-    	  tracer_recover(rs->thread_id);
+    	  tracer_recover(rs);
     	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
     	  /* stall fetch until I-fetch and I-decode recover */
@@ -2997,17 +3019,17 @@ ruu_issue(void)
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
 static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
-static md_gpr_t spec_regs_R[MAX_THREADS];
+static md_gpr_t spec_regs_R[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
-static md_fpr_t spec_regs_F[MAX_THREADS];
+static md_fpr_t spec_regs_F[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
-static md_ctrl_t spec_regs_C[MAX_THREADS];
+static md_ctrl_t spec_regs_C[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* dump speculative register state */
 static void
@@ -3099,7 +3121,7 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
    all register value copied-on-write bitmasks are reset, and the speculative
    memory hash table is cleared */
 static void
-tracer_recover(int thread_id)
+tracer_recover(struct RUU_station *rs_branch)
 {
   int i;
   struct spec_mem_ent *ent, *ent_next;
@@ -3108,16 +3130,13 @@ tracer_recover(int thread_id)
   if (!spec_mode[thread_id])
     panic("cannot recover unless in speculative mode");
 
-  /* reset to non-speculative trace generation mode */
-  spec_mode[thread_id] = FALSE;
-
-  /* reset copied-on-write register bitmasks back to non-speculative state */
-  //BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
-  //BITMAP_CLEAR_MAP(use_spec_F, F_BMAP_SZ);
-  //BITMAP_CLEAR_MAP(use_spec_C, C_BMAP_SZ);
-  spec_regs_R[thread_id] = regs.regs_R;
-  spec_regs_F[thread_id] = regs.regs_F;
-  spec_regs_C[thread_id] = regs.regs_C;
+  if (rs->spec_level == -1) {
+    /* reset to non-speculative trace generation mode */
+    spec_mode[thread_id] = FALSE;
+    thread_states[thread_id].spec_level = -1;
+  } else {
+    thread_states[thread_id].spec_level = rs->spec_level;
+  }
 
   /* reset memory state back to non-speculative state */
   /* FIXME: could version stamps be used here?!?!? */
@@ -3152,7 +3171,30 @@ tracer_recover(int thread_id)
   }
 
   /* reset IFETCH state */
-  thread_states[thread_id].fetch_pred_PC = thread_states[thread_id].fetch_regs_PC = recover_PC[thread_id];
+  thread_states[thread_id].fetch_pred_PC = thread_states[thread_id].fetch_regs_PC = rs->next_PC;
+}
+
+static void
+clear_thread_from_ifq(int thread_id) {
+  int fetch_index = fetch_head;
+
+  while (fetch_index != fetch_tail) {
+    if (fetch_data[fetch_index].thread_id == thread_id) {
+      fetch_data[fetch_index].squashed == TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
+    }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+  }
+  if (fetch_data[fetch_tail].thread_id == thread_id) {
+    fetch_data[fetch_tail].squashed == TRUE;
+    if (ptrace_active) {
+      ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
+    }
+  }
+
+  thread_states[thread_id].keep_fetching = FALSE;
 }
 
 /* initialize the speculative instruction state generator state */
@@ -3449,7 +3491,8 @@ ruu_link_idep(struct RUU_station *rs,		/* rs station to link */
     }
 
   /* locate creator of operand */
-  head = CREATE_VECTOR(idep_name);
+  int spec_level = rs->spec_level;
+  head = CREATE_VECTOR(rs->thread_id, idep_name);
 
   /* any creator? */
   if (!head.rs)
@@ -3496,7 +3539,8 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 
   /* indicate this operation is latest creator of ODEP_NAME */
   CVLINK_INIT(cv, rs, odep_num);
-  SET_CREATE_VECTOR(odep_name, cv);
+  int spec_level = rs->spec_level;
+  SET_CREATE_VECTOR(rs->thread_id, odep_name, cv);
 }
 
 
@@ -3560,120 +3604,63 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define GPR(N)                  ((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_R[thread_id][N]                       \
+				 ? spec_regs_R[thread_id][spec_level][N]                       \
 				 : regs.regs_R[N])
 #define SET_GPR(N,EXPR)         ((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_R[thread_id][N] = (EXPR)),		\
+				 ? ((spec_regs_R[thread_id][spec_level][N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
-				    spec_regs_R[thread_id][N])			\
+				    spec_regs_R[thread_id][spec_level][N])			\
 				 : (regs.regs_R[N] = (EXPR)))
 
-#if defined(TARGET_PISA)
 
-/* floating point register accessors, NOTE: speculative copy on write storage
-   provided for fast recovery during wrong path execute (see tracer_recover()
-   for details on this process */
-#define FPR_L(N)                ((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_F.l[(N)]                   \
-				 : regs.regs_F.l[(N)])
-#define SET_FPR_L(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.l[(N)])			\
-				 : (regs.regs_F.l[(N)] = (EXPR)))
-#define FPR_F(N)                ((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_F.f[(N)]                   \
-				 : regs.regs_F.f[(N)])
-#define SET_FPR_F(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.f[(N)])			\
-				 : (regs.regs_F.f[(N)] = (EXPR)))
-#define FPR_D(N)                ((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_F.d[(N) >> 1]              \
-				 : regs.regs_F.d[(N) >> 1])
-#define SET_FPR_D(N,EXPR)       ((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.d[(N) >> 1])		\
-				 : (regs.regs_F.d[(N) >> 1] = (EXPR)))
-
-/* miscellanous register accessors, NOTE: speculative copy on write storage
-   provided for fast recovery during wrong path execute (see tracer_recover()
-   for details on this process */
-#define HI			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C.hi			\
-				 : regs.regs_C.hi)
-#define SET_HI(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C.hi = (EXPR)),		\
-				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
-				    spec_regs_C.hi)			\
-				 : (regs.regs_C.hi = (EXPR)))
-#define LO			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C.lo			\
-				 : regs.regs_C.lo)
-#define SET_LO(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C.lo = (EXPR)),		\
-				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
-				    spec_regs_C.lo)			\
-				 : (regs.regs_C.lo = (EXPR)))
-#define FCC			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C.fcc			\
-				 : regs.regs_C.fcc)
-#define SET_FCC(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
-				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
-				    spec_regs_C.fcc)			\
-				 : (regs.regs_C.fcc = (EXPR)))
-
-#elif defined(TARGET_ALPHA)
+#if defined(TARGET_ALPHA)
 
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPR_Q(N)		((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_F[thread_id].q[(N)]                   \
+				 ? spec_regs_F[thread_id][spec_level].q[(N)]                   \
 				 : regs.regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_F[thread_id].q[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[thread_id][spec_level].q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F[thread_id].q[(N)])			\
+				    spec_regs_F[thread_id][spec_level].q[(N)])			\
 				 : (regs.regs_F.q[(N)] = (EXPR)))
 #define FPR(N)			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_F[thread_id].d[(N)]			\
+				 ? spec_regs_F[thread_id][spec_level].d[(N)]			\
 				 : regs.regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_F[thread_id].d[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[thread_id][spec_level].d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F[thread_id].d[(N)])			\
+				    spec_regs_F[thread_id][spec_level].d[(N)])			\
 				 : (regs.regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPCR			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C[thread_id].fpcr			\
+				 ? spec_regs_C[thread_id][spec_level].fpcr			\
 				 : regs.regs_C.fpcr)
 #define SET_FPCR(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C[thread_id].fpcr = (EXPR)),	\
+				 ? ((spec_regs_C[thread_id][spec_level].fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
-				    spec_regs_C[thread_id].fpcr)			\
+				    spec_regs_C[thread_id][spec_level].fpcr)			\
 				 : (regs.regs_C.fpcr = (EXPR)))
 #define UNIQ			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C[thread_id].uniq			\
+				 ? spec_regs_C[thread_id][spec_level].uniq			\
 				 : regs.regs_C.uniq)
 #define SET_UNIQ(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C[thread_id].uniq = (EXPR)),	\
+				 ? ((spec_regs_C[thread_id][spec_level].uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
-				    spec_regs_C[thread_id].uniq)			\
+				    spec_regs_C[thread_id][spec_level].uniq)			\
 				 : (regs.regs_C.uniq = (EXPR)))
 #define FCC			((thread_in_spec_mode == TRUE)\
-				 ? spec_regs_C[thread_id].fcc			\
+				 ? spec_regs_C[thread_id][spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		((thread_in_spec_mode == TRUE)				\
-				 ? ((spec_regs_C[thread_id].fcc = (EXPR)),		\
+				 ? ((spec_regs_C[thread_id][spec_level].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
-				    spec_regs_C[thread_id].fcc)			\
+				    spec_regs_C[thread_id][spec_level].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #else
@@ -3847,7 +3834,7 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
 static struct RS_link last_op = RSLINK_NULL_DATA;
 
 static int
-try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter) {
+try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter, int fork_spec_level) {
   int fork_thread_candidate = forking_thread + 1;
   int has_found_fork_candidate = FALSE;
   while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < max_threads)) {
@@ -3880,24 +3867,23 @@ try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter) {
   thread_states[fork_thread_candidate].parent_fork_counters[forking_thread] = forking_thread_counter;
   thread_states[fork_thread_candidate].fetch_pred_PC = fork_pc;
   thread_states[fork_thread_candidate].fetch_regs_PC = fork_pc - sizeof(md_inst_t);
+  thread_states[fork_thread_candidate].keep_fetching = TRUE;
 
   if (spec_mode[forking_thread] == TRUE) {
     spec_mode[fork_thread_candidate] = TRUE;
+    thread_states[fork_thread_candidate].spec_level = 0;
+    spec_regs_R[fork_thread_candidate][0] = spec_regs_R[forking_thread][fork_spec_level];
+    spec_regs_F[fork_thread_candidate][0] = spec_regs_F[forking_thread][fork_spec_level];
+    spec_regs_C[fork_thread_candidate][0] = spec_regs_C[forking_thread][fork_spec_level];
     for (int i=0; i < MD_TOTAL_REGS; i++) {
       create_vector[fork_thread_candidate][i] = spec_create_vector[forking_thread][i];
       spec_create_vector[fork_thread_candidate][i] = spec_create_vector[forking_thread][i];
-      spec_regs_R[fork_thread_candidate] = spec_regs_R[forking_thread];
-      spec_regs_F[fork_thread_candidate] = spec_regs_F[forking_thread];
-      spec_regs_C[fork_thread_candidate] = spec_regs_C[forking_thread];
     }
   } else {
     spec_mode[fork_thread_candidate] = FALSE;
+    thread_states[fork_thread_candidate].spec_level = -1;
     for (int i=0; i < MD_TOTAL_REGS; i++) {
       create_vector[fork_thread_candidate][i] = create_vector[forking_thread][i];
-      spec_create_vector[fork_thread_candidate][i] = create_vector[forking_thread][i];
-      spec_regs_R[fork_thread_candidate] = regs.regs_R;
-      spec_regs_F[fork_thread_candidate] = regs.regs_F;
-      spec_regs_C[fork_thread_candidate] = regs.regs_C;
     }
   }
   return TRUE;
@@ -3957,6 +3943,7 @@ ruu_dispatch(void)
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       dispatched_thread_id = fetch_data[fetch_head].thread_id;
       int thread_in_spec_mode = spec_mode[fetch_data[fetch_head].thread_id];
+      int spec_level = thread_states[fetch_data[fetch_head].thread_id].spec_level;
       inst = fetch_data[fetch_head].IR;
       regs.regs_PC = fetch_data[fetch_head].regs_PC;
       pred_PC[dispatched_thread_id] = fetch_data[fetch_head].pred_PC;
@@ -4270,63 +4257,74 @@ ruu_dispatch(void)
       if (MD_OP_FLAGS(op) & F_CTRL)
 	sim_total_branches++;
 
-      if (!thread_in_spec_mode)
-	{
-#if 0 /* moved above for EIO trace file support */
-	  /* one more non-speculative instruction executed */
-	  sim_num_insn++;
-#endif
-
-	  /* if this is a branching instruction update BTB, i.e., only
+  if (!thread_in_spec_mode) {
+    #if 0 /* moved above for EIO trace file support */
+    	  /* one more non-speculative instruction executed */
+    	  sim_num_insn++;
+    #endif
+    /* if this is a branching instruction update BTB, i.e., only
 	     non-speculative state is committed into the BTB */
-	  if (MD_OP_FLAGS(op) & F_CTRL)
-	    {
-	      sim_num_branches++;
-	      if (pred && bpred_spec_update == spec_ID)
-		{
-		  bpred_update(pred,
-			       /* branch address */regs.regs_PC,
-			       /* actual target address */regs.regs_NPC,
-			       /* taken? */regs.regs_NPC != (regs.regs_PC +
-						       sizeof(md_inst_t)),
-			       /* pred taken? */pred_PC[dispatched_thread_id] != (regs.regs_PC +
-							sizeof(md_inst_t)),
-			       /* correct pred? */pred_PC[dispatched_thread_id] == regs.regs_NPC,
-			       /* opcode */op,
-			       /* predictor update ptr */&rs->dir_update);
-		}
-	    }
-
-	  /* is the trace generator trasitioning into mis-speculation mode? */
-	  if (pred_PC[dispatched_thread_id] != regs.regs_NPC && !fetch_redirected)
-	    {
-        int successful_fork = try_to_fork(regs.regs_NPC, dispatched_thread_id, thread_states[dispatched_thread_id].fork_counter);
-        if (successful_fork) {
-          thread_states[dispatched_thread_id].fork_counter++;
-          rs->fork_counter = thread_states[dispatched_thread_id].fork_counter;
-        }
-	      /* entering mis-speculation mode, indicate this and save PC */
-	      spec_mode[dispatched_thread_id] = TRUE;
-	      rs->recover_inst = TRUE;
-	      recover_PC[dispatched_thread_id] = regs.regs_NPC;
-        /* Need to copy over this threads speculative create vector */
-        for (int i=0; i < MD_TOTAL_REGS; i++) {
-          spec_create_vector[dispatched_thread_id][i] = create_vector[forking_thread][i];
-          spec_regs_R[dispatched_thread_id] = regs.regs_R;
-          spec_regs_F[dispatched_thread_id] = regs.regs_F;
-          spec_regs_C[dispatched_thread_id] = regs.regs_C;
-        }
-	    }
-	} else { /* in speculative mode - but forking is still a possibility */
-    if (pred_PC[dispatched_thread_id] != regs.regs_NPC && !fetch_redirected) {
-      int successful_fork = try_to_fork(regs.regs_NPC, dispatched_thread_id, thread_states[dispatched_thread_id].fork_counter);
-      if (successful_fork) {
-        thread_states[dispatched_thread_id].fork_counter++;
-        rs->fork_counter = thread_states[dispatched_thread_id].fork_counter;
+	  if (MD_OP_FLAGS(op) & F_CTRL) {
+      sim_num_branches++;
+      if (pred && bpred_spec_update == spec_ID)
+  		{
+  		  bpred_update(pred,
+  			       /* branch address */regs.regs_PC,
+  			       /* actual target address */regs.regs_NPC,
+  			       /* taken? */regs.regs_NPC != (regs.regs_PC +
+  						       sizeof(md_inst_t)),
+  			       /* pred taken? */pred_PC[dispatched_thread_id] != (regs.regs_PC +
+  							sizeof(md_inst_t)),
+  			       /* correct pred? */pred_PC[dispatched_thread_id] == regs.regs_NPC,
+  			       /* opcode */op,
+  			       /* predictor update ptr */&rs->dir_update);
+  		}
+    }
+    /* is the trace generator trasitioning into mis-speculation mode? */
+	  if (pred_PC[dispatched_thread_id] != regs.regs_NPC && !fetch_redirected) {
+      /* entering mis-speculation mode, indicate this and save PC */
+      spec_mode[dispatched_thread_id] = TRUE;
+      thread_states[dispatched_thread_id].spec_level = 0;
+      rs->recover_inst = TRUE;
+      recover_PC[dispatched_thread_id] = regs.regs_NPC;
+      /* Need to copy over this threads speculative create vector */
+      for (int i=0; i < MD_TOTAL_REGS; i++) {
+        spec_create_vector[dispatched_thread_id][0][i] = create_vector[forking_thread][i];
       }
+      spec_regs_R[dispatched_thread_id][0] = regs.regs_R;
+      spec_regs_F[dispatched_thread_id][0] = regs.regs_F;
+      spec_regs_C[dispatched_thread_id][0] = regs.regs_C;
+    }
+  } else {
+    if (pred_PC[dispatched_thread_id] != regs.regs_NPC && !fetch_redirected) {
+      /* entering mis-speculation mode, indicate this and save PC */
+      thread_states[dispatched_thread_id].spec_level++;
+      rs->recover_inst = TRUE;
+      recover_PC[dispatched_thread_id] = regs.regs_NPC;
+      /* Need to copy over this threads speculative create vector */
+      for (int i=0; i < MD_TOTAL_REGS; i++) {
+        spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level][i] =
+          spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1][i];
+      }
+      spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
+        spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1];
+      spec_regs_F[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
+        spec_regs_F[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1];
+      spec_regs_C[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
+        spec_regs_C[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1];
     }
   }
-
+  /* Now fork if possible */
+  if (pred_PC[dispatched_thread_id] != regs.regs_NPC && !fetch_redirected) {
+    int successful_fork = try_to_fork(regs.regs_NPC,
+                                      dispatched_thread_id,
+                                      thread_states[dispatched_thread_id].fork_counter,
+                                      thread_states[dispatched_thread_id].spec_level-1);
+    if (successful_fork) {
+      thread_states[dispatched_thread_id].fork_counter++;
+      rs->fork_counter = thread_states[dispatched_thread_id].fork_counter;
+    }
+  }
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
@@ -4460,7 +4458,7 @@ ruu_fetch(void)
         int has_found_new_thread = FALSE;
         current_fetching_thread++;
         while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
-          if (thread_states[current_fetching_thread].in_use == TRUE) {
+          if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
             has_found_new_thread = TRUE;
           } else {
             current_fetching_thread++;
@@ -4469,7 +4467,7 @@ ruu_fetch(void)
         if (has_found_new_thread == FALSE) {
           current_fetching_thread = 0;
           while (has_found_new_thread == FALSE) {
-            if (thread_states[current_fetching_thread].in_use == TRUE) {
+            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching = TRUE) {
               has_found_new_thread = TRUE;
             } else {
               current_fetching_thread++;
@@ -4701,92 +4699,11 @@ sim_main(void)
     dlite_main(regs.regs_PC, regs.regs_PC + sizeof(md_inst_t),
 	       sim_cycle, &regs, mem);
 
-  /* fast forward simulator loop, performs functional simulation for
-     FASTFWD_COUNT insts, then turns on performance (timing) simulation */
-  if (fastfwd_count > 0)
-    {
-      int icount;
-      md_inst_t inst;			/* actual instruction bits */
-      enum md_opcode op;		/* decoded opcode enum */
-      md_addr_t target_PC;		/* actual next/target PC address */
-      md_addr_t addr;			/* effective address, if load/store */
-      int is_write;			/* store? */
-      byte_t temp_byte = 0;		/* temp variable for spec mem access */
-      half_t temp_half = 0;		/* " ditto " */
-      word_t temp_word = 0;		/* " ditto " */
-#ifdef HOST_HAS_QWORD
-      qword_t temp_qword = 0;		/* " ditto " */
-#endif /* HOST_HAS_QWORD */
-      enum md_fault_type fault;
-
-      fprintf(stderr, "sim: ** fast forwarding %d insts **\n", fastfwd_count);
-
-      for (icount=0; icount < fastfwd_count; icount++)
-	{
-	  /* maintain $r0 semantics */
-	  regs.regs_R[MD_REG_ZERO] = 0;
-#ifdef TARGET_ALPHA
-	  regs.regs_F.d[MD_REG_ZERO] = 0.0;
-#endif /* TARGET_ALPHA */
-
-	  /* get the next instruction to execute */
-	  MD_FETCH_INST(inst, mem, regs.regs_PC);
-
-	  /* set default reference address */
-	  addr = 0; is_write = FALSE;
-
-	  /* set default fault - none */
-	  fault = md_fault_none;
-
-	  /* decode the instruction */
-	  MD_SET_OPCODE(op, inst);
-
-	  /* execute the instruction */
-	  switch (op)
-	    {
-#define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3)		\
-	    case OP:							\
-	      SYMCAT(OP,_IMPL);						\
-	      break;
-#define DEFLINK(OP,MSK,NAME,MASK,SHIFT)					\
-	    case OP:							\
-	      panic("attempted to execute a linking opcode");
-#define CONNECT(OP)
-#undef DECLARE_FAULT
-#define DECLARE_FAULT(FAULT)						\
-	      { fault = (FAULT); break; }
-#include "machine.def"
-	    default:
-	      panic("attempted to execute a bogus opcode");
-	    }
-
-	  if (fault != md_fault_none)
-	    fatal("fault (%d) detected @ 0x%08p", fault, regs.regs_PC);
-
-	  /* update memory access stats */
-	  if (MD_OP_FLAGS(op) & F_MEM)
-	    {
-	      if (MD_OP_FLAGS(op) & F_STORE)
-		is_write = TRUE;
-	    }
-
-	  /* check for DLite debugger entry condition */
-	  if (dlite_check_break(regs.regs_NPC,
-				is_write ? ACCESS_WRITE : ACCESS_READ,
-				addr, sim_num_insn, sim_num_insn))
-	    dlite_main(regs.regs_PC, regs.regs_NPC, sim_num_insn, &regs, mem);
-
-	  /* go to the next instruction */
-	  regs.regs_PC = regs.regs_NPC;
-	  regs.regs_NPC += sizeof(md_inst_t);
-	}
-    }
-
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  fetch_regs_PC[0] = regs.regs_PC - sizeof(md_inst_t);
-  fetch_pred_PC[0] = regs.regs_PC;
+  thread_states[0].fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
+  thread_states[0].fetch_pred_PC = regs.regs_PC;
   regs.regs_PC = regs.regs_PC - sizeof(md_inst_t);
 
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
