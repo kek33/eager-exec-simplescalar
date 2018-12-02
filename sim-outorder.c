@@ -2323,6 +2323,7 @@ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
 
 /* forward declarations */
 static void tracer_recover(struct RUU_station *rs);
+static void clear_thread_from_ifq(int thread_id);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2962,7 +2963,7 @@ tracer_recover(struct RUU_station *rs_branch)
     spec_mode[thread_id] = FALSE;
     thread_states[thread_id].spec_level = -1;
   } else {
-    thread_states[thread_id].spec_level = rs->spec_level;
+    thread_states[thread_id].spec_level = rs_branch->spec_level;
   }
 
   /* reset memory state back to non-speculative state */
@@ -3522,7 +3523,9 @@ try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter, i
   if (spec_mode[forking_thread] == TRUE) {
     spec_mode[fork_thread_candidate] = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
-    spec_regs_R[fork_thread_candidate][0] = spec_regs_R[forking_thread][fork_spec_level];
+    for (int n=0; i < sizeof(regs.regs_R); n++) {
+      spec_regs_R[fork_thread_candidate][0][n] = spec_regs_R[forking_thread][fork_spec_level][n];
+    }
     spec_regs_F[fork_thread_candidate][0] = spec_regs_F[forking_thread][fork_spec_level];
     spec_regs_C[fork_thread_candidate][0] = spec_regs_C[forking_thread][fork_spec_level];
     for (int i=0; i < MD_TOTAL_REGS; i++) {
