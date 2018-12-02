@@ -70,7 +70,6 @@
 #include "eval.h"
 #include "stats.h"
 #include "ptrace.h"
-#include "dlite.h"
 #include "sim.h"
 
 
@@ -1416,29 +1415,6 @@ sim_init(void)
   mem_init(mem);
 }
 
-/* default register state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_reg_obj(struct regs_t *regs,		/* registers to access */
-	      int is_write,			/* access type */
-	      enum md_reg_type rt,		/* reg bank to probe */
-	      int reg,				/* register number */
-	      struct eval_value_t *val);	/* input, output */
-
-/* default memory state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
-	      int is_write,			/* access type */
-	      md_addr_t addr,			/* address to access */
-	      char *p,				/* input/output buffer */
-	      int nbytes);			/* size of access */
-
-/* default machine state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_mstate_obj(FILE *stream,			/* output stream */
-		 char *cmd,			/* optional command string */
-		 struct regs_t *regs,		/* registers to access */
-		 struct mem_t *mem);		/* memory space to access */
-
 /* total RS links allocated at program start */
 #define MAX_RS_LINKS                    4096
 
@@ -1477,7 +1453,7 @@ sim_load_prog(char *fname,		/* program to load */
   thread_states_init();
 
   /* initialize the DLite debugger */
-  dlite_init(simoo_reg_obj, simoo_mem_obj, simoo_mstate_obj);
+  //dlite_init(simoo_reg_obj, simoo_mem_obj, simoo_mstate_obj);
 }
 
 /* dump simulator-specific auxiliary simulator statistics */
@@ -1649,30 +1625,6 @@ ruu_dumpent(struct RUU_station *rs,		/* ptr to RUU station */
 	  OPERANDS_READY(rs) ? "t" : "f");
 }
 
-/* dump the contents of the RUU */
-static void
-ruu_dump(FILE *stream)				/* output stream */
-{
-  int num, head;
-  struct RUU_station *rs;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** RUU state **\n");
-  fprintf(stream, "RUU_head: %d, RUU_tail: %d\n", RUU_head, RUU_tail);
-  fprintf(stream, "RUU_num: %d\n", RUU_num);
-
-  num = RUU_num;
-  head = RUU_head;
-  while (num)
-    {
-      rs = &RUU[head];
-      ruu_dumpent(rs, rs - RUU, stream, /* header */TRUE);
-      head = (head + 1) % RUU_size;
-      num--;
-    }
-}
 
 /*
  * load/store queue (LSQ): holds loads and stores in program order, indicating
@@ -1730,32 +1682,6 @@ lsq_init(void)
   LSQ_count = 0;
   LSQ_fcount = 0;
 }
-
-/* dump the contents of the RUU */
-static void
-lsq_dump(FILE *stream)				/* output stream */
-{
-  int num, head;
-  struct RUU_station *rs;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** LSQ state **\n");
-  fprintf(stream, "LSQ_head: %d, LSQ_tail: %d\n", LSQ_head, LSQ_tail);
-  fprintf(stream, "LSQ_num: %d\n", LSQ_num);
-
-  num = LSQ_num;
-  head = LSQ_head;
-  while (num)
-    {
-      rs = &LSQ[head];
-      ruu_dumpent(rs, rs - LSQ, stream, /* header */TRUE);
-      head = (head + 1) % LSQ_size;
-      num--;
-    }
-}
-
 
 /*
  * RS_LINK defs and decls
@@ -1887,32 +1813,6 @@ eventq_init(void)
   event_queue = NULL;
 }
 
-/* dump the contents of the event queue */
-static void
-eventq_dump(FILE *stream)			/* output stream */
-{
-  struct RS_link *ev;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** event queue state **\n");
-
-  for (ev = event_queue; ev != NULL; ev = ev->next)
-    {
-      /* is event still valid? */
-      if (RSLINK_VALID(ev))
-	{
-	  struct RUU_station *rs = RSLINK_RS(ev);
-
-	  fprintf(stream, "idx: %2d: @ %.0f\n",
-		  (int)(rs - (rs->in_LSQ ? LSQ : RUU)), (double)ev->x.when);
-	  ruu_dumpent(rs, rs - (rs->in_LSQ ? LSQ : RUU),
-		      stream, /* !header */FALSE);
-	}
-    }
-}
-
 /* insert an event for RS into the event queue, event queue is sorted from
    earliest to latest event, event and associated side-effects will be
    apparent at the start of cycle WHEN */
@@ -2011,30 +1911,6 @@ static void
 readyq_init(void)
 {
   ready_queue = NULL;
-}
-
-/* dump the contents of the ready queue */
-static void
-readyq_dump(FILE *stream)			/* output stream */
-{
-  struct RS_link *link;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** ready queue state **\n");
-
-  for (link = ready_queue; link != NULL; link = link->next)
-    {
-      /* is entry still valid? */
-      if (RSLINK_VALID(link))
-	{
-	  struct RUU_station *rs = RSLINK_RS(link);
-
-	  ruu_dumpent(rs, rs - (rs->in_LSQ ? LSQ : RUU),
-		      stream, /* header */TRUE);
-	}
-    }
 }
 
 /* insert ready node into the ready list using ready instruction scheduling
@@ -2170,30 +2046,6 @@ cv_init(void)
       }
     }
   }
-}
-
-/* dump the contents of the create vector */
-static void
-cv_dump(FILE *stream)				/* output stream */
-{
-  int i;
-  struct CV_link ent;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** create vector state **\n");
-
-  for (i=0; i < MD_TOTAL_REGS; i++)
-    {
-      ent = CREATE_VECTOR(0, i);
-      if (!ent.rs)
-	fprintf(stream, "[cv%02d]: from architected reg file\n", i);
-      else
-	fprintf(stream, "[cv%02d]: from %s, idx: %d\n",
-		i, (ent.rs->in_LSQ ? "LSQ" : "RUU"),
-		(int)(ent.rs - (ent.rs->in_LSQ ? LSQ : RUU)));
-    }
 }
 
 
@@ -2750,7 +2602,7 @@ lsq_refresh(void)
             (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
             for (j=0; j < n_std_unknowns[test_thread]; j++) {
               if (std_unknowns[test_thread][j] == LSQ[index].addr) {
-                std_unknowns[j] = 0;
+                std_unknowns[test_thread][j] = 0;
               }
             }
           }
@@ -3047,50 +2899,6 @@ static md_fpr_t spec_regs_F[MAX_THREADS][MAX_SPEC_LEVELS];
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
 static md_ctrl_t spec_regs_C[MAX_THREADS][MAX_SPEC_LEVELS];
-
-/* dump speculative register state */
-static void
-rspec_dump(FILE *stream)			/* output stream */
-{
-  int i;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** speculative register contents **\n");
-
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
-
-  /* dump speculative integer regs */
-  for (i=0; i < MD_NUM_IREGS; i++)
-    {
-      if (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, i))
-	{
-	  md_print_ireg(spec_regs_R, i, stream);
-	  fprintf(stream, "\n");
-	}
-    }
-
-  /* dump speculative FP regs */
-  for (i=0; i < MD_NUM_FREGS; i++)
-    {
-      if (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, i))
-	{
-	  md_print_fpreg(spec_regs_F, i, stream);
-	  fprintf(stream, "\n");
-	}
-    }
-
-  /* dump speculative CTRL regs */
-  for (i=0; i < MD_NUM_CREGS; i++)
-    {
-      if (BITMAP_SET_P(use_spec_C, C_BMAP_SZ, i))
-	{
-	  md_print_creg(spec_regs_C, i, stream);
-	  fprintf(stream, "\n");
-	}
-    }
-}
 
 
 /* speculative memory hash table size, NOTE: this must be a power-of-two */
@@ -3426,67 +3234,6 @@ spec_mem_access(struct mem_t *mem,		/* memory space to access */
   return md_fault_none;
 }
 
-/* dump speculative memory state */
-static void
-mspec_dump(FILE *stream)			/* output stream */
-{
-  int i;
-  struct spec_mem_ent *ent;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** speculative memory contents **\n");
-
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
-
-  for (i=0; i<STORE_HASH_SIZE; i++)
-    {
-      /* dump contents of all hash table buckets */
-      for (ent=store_htable[i]; ent; ent=ent->next)
-	{
-	  myfprintf(stream, "[0x%08p]: %12.0f/0x%08x:%08x\n",
-		    ent->addr, (double)(*((double *)ent->data)),
-		    *((unsigned int *)&ent->data[0]),
-		    *(((unsigned int *)&ent->data[0]) + 1));
-	}
-    }
-}
-
-/* default memory state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
-	      int is_write,			/* access type */
-	      md_addr_t addr,			/* address to access */
-	      char *p,				/* input/output buffer */
-	      int nbytes)			/* size of access */
-{
-  enum mem_cmd cmd;
-
-  if (!is_write)
-    cmd = Read;
-  else
-    cmd = Write;
-
-#if 0
-  char *errstr;
-
-  errstr = mem_valid(cmd, addr, nbytes, /* declare */FALSE);
-  if (errstr)
-    return errstr;
-#endif
-
-  /* else, no error, access memory */
-  if (spec_mode)
-    spec_mem_access(mem, cmd, addr, p, nbytes);
-  else
-    mem_access(mem, cmd, addr, p, nbytes);
-
-  /* no error */
-  return NULL;
-}
-
-
 /*
  *  RUU_DISPATCH() - decode instructions and allocate RUU and LSQ resources
  */
@@ -3731,122 +3478,6 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    (thread_in_spec_mode ? panic("speculative syscall") : (void) 0),		\
    sys_syscall(&regs, mem_access, mem, INST, TRUE))
 
-/* default register state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
-	      int is_write,			/* access type */
-	      enum md_reg_type rt,		/* reg bank to probe */
-	      int reg,				/* register number */
-	      struct eval_value_t *val)		/* input, output */
-{
-  switch (rt)
-    {
-    case rt_gpr:
-      if (reg < 0 || reg >= MD_NUM_IREGS)
-	return "register number out of range";
-
-      if (!is_write)
-	{
-	  val->type = et_uint;
-	  val->value.as_uint = GPR(reg);
-	}
-      else
-	SET_GPR(reg, eval_as_uint(*val));
-      break;
-
-    case rt_lpr:
-      if (reg < 0 || reg >= MD_NUM_FREGS)
-	return "register number out of range";
-
-      /* FIXME: this is not portable... */
-      abort();
-#if 0
-      if (!is_write)
-	{
-	  val->type = et_uint;
-	  val->value.as_uint = FPR_L(reg);
-	}
-      else
-	SET_FPR_L(reg, eval_as_uint(*val));
-#endif
-      break;
-
-    case rt_fpr:
-      /* FIXME: this is not portable... */
-      abort();
-#if 0
-      if (!is_write)
-	val->value.as_float = FPR_F(reg);
-      else
-	SET_FPR_F(reg, val->value.as_float);
-#endif
-      break;
-
-    case rt_dpr:
-      /* FIXME: this is not portable... */
-      abort();
-#if 0
-      /* 1/2 as many regs in this mode */
-      if (reg < 0 || reg >= MD_NUM_REGS/2)
-	return "register number out of range";
-
-      if (at == at_read)
-	val->as_double = FPR_D(reg * 2);
-      else
-	SET_FPR_D(reg * 2, val->as_double);
-#endif
-      break;
-
-      /* FIXME: this is not portable... */
-#if 0
-      abort();
-    case rt_hi:
-      if (at == at_read)
-	val->as_word = HI;
-      else
-	SET_HI(val->as_word);
-      break;
-    case rt_lo:
-      if (at == at_read)
-	val->as_word = LO;
-      else
-	SET_LO(val->as_word);
-      break;
-    case rt_FCC:
-      if (at == at_read)
-	val->as_condition = FCC;
-      else
-	SET_FCC(val->as_condition);
-      break;
-#endif
-
-    case rt_PC:
-      if (!is_write)
-	{
-	  val->type = et_addr;
-	  val->value.as_addr = regs.regs_PC;
-	}
-      else
-	regs.regs_PC = eval_as_addr(*val);
-      break;
-
-    case rt_NPC:
-      if (!is_write)
-	{
-	  val->type = et_addr;
-	  val->value.as_addr = regs.regs_NPC;
-	}
-      else
-	regs.regs_NPC = eval_as_addr(*val);
-      break;
-
-    default:
-      panic("bogus register bank");
-    }
-
-  /* no error */
-  return NULL;
-}
 
 /* the last operation that ruu_dispatch() attempted to dispatch, for
    implementing in-order issue */
@@ -4376,23 +4007,8 @@ ruu_dispatch(void)
       /* consume instruction from IFETCH -> DISPATCH queue */
       fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
       fetch_num--;
-
-      /* check for DLite debugger entry condition */
-      made_check = TRUE;
-      if (dlite_check_break(pred_PC[dispatched_thread_id],
-			    is_write ? ACCESS_WRITE : ACCESS_READ,
-			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs.regs_PC, pred_PC[dispatched_thread_id], sim_cycle, &regs, mem);
     }
 
-  /* need to enter DLite at least once per cycle */
-  if (!made_check)
-    {
-      if (dlite_check_break(/* no next PC */0,
-			    is_write ? ACCESS_WRITE : ACCESS_READ,
-			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs.regs_PC, /* no next PC */0, sim_cycle, &regs, mem);
-    }
 }
 
 
@@ -4414,43 +4030,6 @@ fetch_init(void)
   fetch_tail = fetch_head = 0;
   IFQ_count = 0;
   IFQ_fcount = 0;
-}
-
-/* dump contents of fetch stage registers and fetch queue */
-void
-fetch_dump(FILE *stream)			/* output stream */
-{
-  int num, head;
-
-  if (!stream)
-    stream = stderr;
-
-  fprintf(stream, "** fetch stage state **\n");
-
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
-  myfprintf(stream, "pred_PC: 0x%08p, recover_PC: 0x%08p\n",
-	    pred_PC, recover_PC);
-  myfprintf(stream, "fetch_regs_PC: 0x%08p, fetch_pred_PC: 0x%08p\n",
-	    fetch_regs_PC, fetch_pred_PC);
-  fprintf(stream, "\n");
-
-  fprintf(stream, "** fetch queue contents **\n");
-  fprintf(stream, "fetch_num: %d\n", fetch_num);
-  fprintf(stream, "fetch_head: %d, fetch_tail: %d\n",
-	  fetch_head, fetch_tail);
-
-  num = fetch_num;
-  head = fetch_head;
-  while (num)
-    {
-      fprintf(stream, "idx: %2d: inst: `", head);
-      md_print_insn(fetch_data[head].IR, fetch_data[head].regs_PC, stream);
-      fprintf(stream, "'\n");
-      myfprintf(stream, "         regs_PC: 0x%08p, pred_PC: 0x%08p\n",
-		fetch_data[head].regs_PC, fetch_data[head].pred_PC);
-      head = (head + 1) & (ruu_ifq_size - 1);
-      num--;
-    }
 }
 
 static int last_inst_missed = FALSE;
@@ -4624,87 +4203,6 @@ ruu_fetch(void)
     }
 }
 
-/* default machine state accessor, used by DLite */
-static char *					/* err str, NULL for no err */
-simoo_mstate_obj(FILE *stream,			/* output stream */
-		 char *cmd,			/* optional command string */
-		 struct regs_t *regs,		/* registers to access */
-		 struct mem_t *mem)		/* memory space to access */
-{
-  if (!cmd || !strcmp(cmd, "help"))
-    fprintf(stream,
-"mstate commands:\n"
-"\n"
-"    mstate help   - show all machine-specific commands (this list)\n"
-"    mstate stats  - dump all statistical variables\n"
-"    mstate res    - dump current functional unit resource states\n"
-"    mstate ruu    - dump contents of the register update unit\n"
-"    mstate lsq    - dump contents of the load/store queue\n"
-"    mstate eventq - dump contents of event queue\n"
-"    mstate readyq - dump contents of ready instruction queue\n"
-"    mstate cv     - dump contents of the register create vector\n"
-"    mstate rspec  - dump contents of speculative regs\n"
-"    mstate mspec  - dump contents of speculative memory\n"
-"    mstate fetch  - dump contents of fetch stage registers and fetch queue\n"
-"\n"
-	    );
-  else if (!strcmp(cmd, "stats"))
-    {
-      /* just dump intermediate stats */
-      sim_print_stats(stream);
-    }
-  else if (!strcmp(cmd, "res"))
-    {
-      /* dump resource state */
-      res_dump(fu_pool, stream);
-    }
-  else if (!strcmp(cmd, "ruu"))
-    {
-      /* dump RUU contents */
-      ruu_dump(stream);
-    }
-  else if (!strcmp(cmd, "lsq"))
-    {
-      /* dump LSQ contents */
-      lsq_dump(stream);
-    }
-  else if (!strcmp(cmd, "eventq"))
-    {
-      /* dump event queue contents */
-      eventq_dump(stream);
-    }
-  else if (!strcmp(cmd, "readyq"))
-    {
-      /* dump event queue contents */
-      readyq_dump(stream);
-    }
-  else if (!strcmp(cmd, "cv"))
-    {
-      /* dump event queue contents */
-      cv_dump(stream);
-    }
-  else if (!strcmp(cmd, "rspec"))
-    {
-      /* dump event queue contents */
-      rspec_dump(stream);
-    }
-  else if (!strcmp(cmd, "mspec"))
-    {
-      /* dump event queue contents */
-      mspec_dump(stream);
-    }
-  else if (!strcmp(cmd, "fetch"))
-    {
-      /* dump event queue contents */
-      fetch_dump(stream);
-    }
-  else
-    return "unknown mstate command";
-
-  /* no error */
-  return NULL;
-}
-
 
 /* start simulation, program loaded, processor precise state initialized */
 void
@@ -4717,11 +4215,6 @@ sim_main(void)
   /* set up program entry state */
   regs.regs_PC = ld_prog_entry;
   regs.regs_NPC = regs.regs_PC + sizeof(md_inst_t);
-
-  /* check for DLite debugger entry condition */
-  if (dlite_check_break(regs.regs_PC, /* no access */0, /* addr */0, 0, 0))
-    dlite_main(regs.regs_PC, regs.regs_PC + sizeof(md_inst_t),
-	       sim_cycle, &regs, mem);
 
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
