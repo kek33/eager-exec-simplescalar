@@ -3526,8 +3526,8 @@ try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter, i
     spec_regs_F[fork_thread_candidate][0] = spec_regs_F[forking_thread][fork_spec_level];
     spec_regs_C[fork_thread_candidate][0] = spec_regs_C[forking_thread][fork_spec_level];
     for (int i=0; i < MD_TOTAL_REGS; i++) {
-      create_vector[fork_thread_candidate][i] = spec_create_vector[forking_thread][i];
-      spec_create_vector[fork_thread_candidate][i] = spec_create_vector[forking_thread][i];
+      create_vector[fork_thread_candidate][i] = spec_create_vector[forking_thread][fork_spec_level][i];
+      spec_create_vector[fork_thread_candidate][0][i] = spec_create_vector[forking_thread][fork_spec_level][i];
     }
   } else {
     spec_mode[fork_thread_candidate] = FALSE;
@@ -3623,9 +3623,9 @@ ruu_dispatch(void)
 	}
 
       /* maintain $r0 semantics (in spec and non-spec space) */
-      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
+      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[dispatched_thread_id][spec_level][MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
+      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F[dispatched_thread_id][spec_level].d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
       if (!thread_in_spec_mode)
@@ -3942,9 +3942,11 @@ ruu_dispatch(void)
       recover_PC[dispatched_thread_id] = regs.regs_NPC;
       /* Need to copy over this threads speculative create vector */
       for (int i=0; i < MD_TOTAL_REGS; i++) {
-        spec_create_vector[dispatched_thread_id][0][i] = create_vector[forking_thread][i];
+        spec_create_vector[dispatched_thread_id][0][i] = create_vector[dispatched_thread_id][i];
       }
-      spec_regs_R[dispatched_thread_id][0] = regs.regs_R;
+      for (int n=0; i < sizeof(regs.regs_R); n++) {
+        spec_regs_R[dispatched_thread_id][0][n] = regs.regs_R[n];
+      }
       spec_regs_F[dispatched_thread_id][0] = regs.regs_F;
       spec_regs_C[dispatched_thread_id][0] = regs.regs_C;
     }
@@ -3959,8 +3961,10 @@ ruu_dispatch(void)
         spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level][i] =
           spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1][i];
       }
-      spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
-        spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1];
+      for (int n=0; i < sizeof(regs.regs_R); n++) {
+        spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level][n] =
+          spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1][n];
+      }
       spec_regs_F[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
         spec_regs_F[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1];
       spec_regs_C[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level] =
@@ -4068,7 +4072,7 @@ ruu_fetch(void)
         if (has_found_new_thread == FALSE) {
           current_fetching_thread = 0;
           while (has_found_new_thread == FALSE) {
-            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching = TRUE) {
+            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
               has_found_new_thread = TRUE;
             } else {
               current_fetching_thread++;
