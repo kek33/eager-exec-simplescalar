@@ -3523,7 +3523,7 @@ try_to_fork(md_addr_t fork_pc, int forking_thread, int forking_thread_counter, i
   if (spec_mode[forking_thread] == TRUE) {
     spec_mode[fork_thread_candidate] = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
-    for (int n=0; i < sizeof(regs.regs_R); n++) {
+    for (int n=0; n < sizeof(regs.regs_R); n++) {
       spec_regs_R[fork_thread_candidate][0][n] = spec_regs_R[forking_thread][fork_spec_level][n];
     }
     spec_regs_F[fork_thread_candidate][0] = spec_regs_F[forking_thread][fork_spec_level];
@@ -3947,7 +3947,7 @@ ruu_dispatch(void)
       for (int i=0; i < MD_TOTAL_REGS; i++) {
         spec_create_vector[dispatched_thread_id][0][i] = create_vector[dispatched_thread_id][i];
       }
-      for (int n=0; i < sizeof(regs.regs_R); n++) {
+      for (int n=0; n < sizeof(regs.regs_R); n++) {
         spec_regs_R[dispatched_thread_id][0][n] = regs.regs_R[n];
       }
       spec_regs_F[dispatched_thread_id][0] = regs.regs_F;
@@ -3964,7 +3964,7 @@ ruu_dispatch(void)
         spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level][i] =
           spec_create_vector[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1][i];
       }
-      for (int n=0; i < sizeof(regs.regs_R); n++) {
+      for (int n=0; n < sizeof(regs.regs_R); n++) {
         spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level][n] =
           spec_regs_R[dispatched_thread_id][thread_states[dispatched_thread_id].spec_level-1][n];
       }
