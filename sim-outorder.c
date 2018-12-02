@@ -575,6 +575,7 @@ static int max_threads; /* maximum threads allowed to run */
 static int fork_penalty; /* penalty given for forking a branch */
 static int max_fetches_before_switch; /* max fetches for given thread before switching */
 static int ideal_squashing; /* should we assume ideal squashing, or leave holes in ROB? */
+int spec_mode[MAX_THREADS];
 int current_fetching_thread = 0;
 int fetches_left_for_thread;
 struct thread_state {
@@ -2131,18 +2132,18 @@ static tick_t create_vector_rt[MAX_THREADS][MD_TOTAL_REGS];
 static tick_t spec_create_vector_rt[MAX_THREADS][MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
-#define CREATE_VECTOR(THREAD, N)        spec_mode[THREAD]\
+#define CREATE_VECTOR(THREAD, N)        (spec_mode[THREAD]\
 				 ? spec_create_vector[THREAD][spec_level][N]                \
 				 : create_vector[THREAD][N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(THREAD, N)     spec_mode[THREAD]\
+#define CREATE_VECTOR_RT(THREAD, N)     (spec_mode[THREAD]\
 				 ? spec_create_vector_rt[THREAD][spec_level][N]             \
 				 : create_vector_rt[THREAD][N])
 
 /* set a create vector entry */
 #define SET_CREATE_VECTOR(THREAD, N, L) (spec_mode[THREAD]            \
-				 ? spec_create_vector[THREAD][spec_level][N] = (L))        \
+				 ? (spec_create_vector[THREAD][spec_level][N] = (L))        \
 				 : (create_vector[THREAD][N] = (L)))
 
 /* initialize the create vector */
@@ -2185,7 +2186,7 @@ cv_dump(FILE *stream)				/* output stream */
 
   for (i=0; i < MD_TOTAL_REGS; i++)
     {
-      ent = CREATE_VECTOR(i);
+      ent = CREATE_VECTOR(0, i);
       if (!ent.rs)
 	fprintf(stream, "[cv%02d]: from architected reg file\n", i);
       else
@@ -2460,13 +2461,7 @@ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
     }
 
   /* reset head/tail pointers to point to the mis-predicted branch */
-
-  /* revert create vector back to last precise create vector state, NOTE:
-     this is accomplished by resetting all the copied-on-write bits in the
-     USE_SPEC_CV bit vector */
-  for (int n = 0; n < MD_TOTAL_REGS; n++) {
-    spec_create_vector[thread_id][n] = create_vector[thread_id][n];
-  }
+  // Nothing needs to be done about the create vector at this point - this is handled in tracer_recover()
 }
 
 
@@ -2551,7 +2546,7 @@ ruu_writeback(void)
     	    panic("mis-predicted load or store?!?!?");
 
     	  /* recover processor state and reinit fetch to correct path */
-    	  ruu_recover(rs - RUU);
+    	  ruu_recover(rs - RUU, rs->thread_id);
     	  tracer_recover(rs);
     	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
@@ -2597,14 +2592,14 @@ ruu_writeback(void)
 		{
 		  /* update the speculative create vector, future operations
 		     get value from later creator or architected reg file */
-		  link = spec_create_vector[rs->thread_id][rs->onames[i]];
+		  link = spec_create_vector[rs->thread_id][rs->spec_level][rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      spec_create_vector[rs->thread_id][rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[rs->thread_id][rs->onames[i]] = sim_cycle;
+		      spec_create_vector[rs->thread_id][rs->spec_level][rs->onames[i]] = CVLINK_NULL;
+		      spec_create_vector_rt[rs->thread_id][rs->spec_level][rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2745,7 +2740,7 @@ lsq_refresh(void)
         int test_thread;
         for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
           if (std_unknowns[test_thread][j] == LSQ[index].addr) {
-            std_unknowns[j] = 0;
+            std_unknowns[test_thread][j] = 0;
           }
         }
 
@@ -3133,6 +3128,7 @@ struct fetch_rec {
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
   int thread_id; /* thread id of the current fetched thread */
+  int squashed; /* is this squashed? */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -3148,11 +3144,12 @@ tracer_recover(struct RUU_station *rs_branch)
   int i;
   struct spec_mem_ent *ent, *ent_next;
 
+  int thread_id = rs_branch->thread_id;
   /* better be in mis-speculative trace generation mode */
   if (!spec_mode[thread_id])
     panic("cannot recover unless in speculative mode");
 
-  if (rs->spec_level == -1) {
+  if (rs_branch->spec_level == -1) {
     /* reset to non-speculative trace generation mode */
     spec_mode[thread_id] = FALSE;
     thread_states[thread_id].spec_level = -1;
@@ -3961,9 +3958,12 @@ ruu_dispatch(void)
 	  /* stall until last operation is ready to issue */
 	  break;
 	}
-
+      if (fetch_data[fetch_head].squashed == TRUE) {
+        continue;
+      }
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       dispatched_thread_id = fetch_data[fetch_head].thread_id;
+      int thread_id = dispatched_thread_id;
       int thread_in_spec_mode = spec_mode[fetch_data[fetch_head].thread_id];
       int spec_level = thread_states[fetch_data[fetch_head].thread_id].spec_level;
       inst = fetch_data[fetch_head].IR;
@@ -4501,12 +4501,12 @@ ruu_fetch(void)
       thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
 
       /* is this a bogus text address? (can happen on mis-spec path) */
-      if (ld_text_base <= fetch_regs_PC
-	  && fetch_regs_PC < (ld_text_base+ld_text_size)
-	  && !(fetch_regs_PC & (sizeof(md_inst_t)-1)))
+      if (ld_text_base <= thread_states[current_fetching_thread].fetch_regs_PC
+	  && thread_states[current_fetching_thread].fetch_regs_PC < (ld_text_base+ld_text_size)
+	  && !(thread_states[current_fetching_thread].fetch_regs_PC & (sizeof(md_inst_t)-1)))
 	{
 	  /* read instruction from memory */
-	  MD_FETCH_INST(inst, mem, fetch_regs_PC);
+	  MD_FETCH_INST(inst, mem, thread_states[current_fetching_thread].fetch_regs_PC);
 
 	  /* address is within program text, read instruction from memory */
 	  lat = cache_il1_lat;
@@ -4514,7 +4514,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(cache_il1, Read, IACOMPRESS(thread_states[current_fetching_thread].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
@@ -4526,7 +4526,7 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(itlb, Read, IACOMPRESS(thread_states[current_fetching_thread].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
@@ -4565,9 +4565,9 @@ ruu_fetch(void)
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
 	  if (MD_OP_FLAGS(op) & F_CTRL)
-	    fetch_pred_PC =
+	    thread_states[current_fetching_thread].fetch_pred_PC =
 	      bpred_lookup(pred,
-			   /* branch address */fetch_regs_PC,
+			   /* branch address */thread_states[current_fetching_thread].fetch_regs_PC,
 			   /* target address *//* FIXME: not computed */0,
 			   /* opcode */op,
 			   /* call? */MD_IS_CALL(op),
@@ -4575,13 +4575,13 @@ ruu_fetch(void)
 			   /* updt */&(fetch_data[fetch_tail].dir_update),
 			   /* RSB index */&stack_recover_idx);
 	  else
-	    fetch_pred_PC = 0;
+	    thread_states[current_fetching_thread].fetch_pred_PC = 0;
 
 	  /* valid address returned from branch predictor? */
-	  if (!fetch_pred_PC)
+	  if (!thread_states[current_fetching_thread].fetch_pred_PC)
 	    {
 	      /* no predicted taken target, attempt not taken target */
-	      fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	      thread_states[current_fetching_thread].fetch_pred_PC = thread_states[current_fetching_thread].fetch_regs_PC + sizeof(md_inst_t);
 	    }
 	  else
 	    {
@@ -4595,15 +4595,17 @@ ruu_fetch(void)
 	{
 	  /* no predictor, just default to predict not taken, and
 	     continue fetching instructions linearly */
-	  fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	  thread_states[current_fetching_thread].fetch_pred_PC = thread_states[current_fetching_thread].fetch_regs_PC + sizeof(md_inst_t);
 	}
 
       /* commit this instruction to the IFETCH -> DISPATCH queue */
       fetch_data[fetch_tail].IR = inst;
-      fetch_data[fetch_tail].regs_PC = fetch_regs_PC;
-      fetch_data[fetch_tail].pred_PC = fetch_pred_PC;
+      fetch_data[fetch_tail].regs_PC = thread_states[current_fetching_thread].fetch_regs_PC;
+      fetch_data[fetch_tail].pred_PC = thread_states[current_fetching_thread].fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].thread_id = current_fetching_thread;
+      fetch_data[fetch_tail].squashed = FALSE;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
@@ -4724,6 +4726,9 @@ sim_main(void)
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
+  for (int i=0; i < max_threads; i++) {
+    spec_mode[i] = FALSE;
+  }
   thread_states[0].fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
   thread_states[0].fetch_pred_PC = regs.regs_PC;
   regs.regs_PC = regs.regs_PC - sizeof(md_inst_t);
