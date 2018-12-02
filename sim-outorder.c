@@ -2999,7 +2999,7 @@ tracer_recover(struct RUU_station *rs_branch)
   }
 
   /* reset IFETCH state */
-  thread_states[thread_id].fetch_pred_PC = thread_states[thread_id].fetch_regs_PC = rs->next_PC;
+  thread_states[thread_id].fetch_pred_PC = thread_states[thread_id].fetch_regs_PC = rs_branch->next_PC;
 }
 
 static void
