@@ -891,6 +891,22 @@ sim_reg_options(struct opt_odb_t *odb)
   opt_reg_flag(odb, "-bugcompat",
 	       "operate in backward-compatible bugs mode (for testing only)",
 	       &bugcompat_mode, /* default */FALSE, /* print */TRUE, NULL);
+
+   opt_reg_int(odb, "-max:threads",
+ 	      "maximum number of threads at any given moment",
+ 	      &max_threads, /* default */1,
+ 	      /* print */TRUE, /* format */NULL);
+
+   opt_reg_int(odb, "-fork_penalty",
+          "penalty to total cycles for forking a thread",
+          &fork_penalty, /* default */0,
+          /* print */TRUE, /* format */NULL);
+
+   opt_reg_int(odb, "-max:fetches_before_switch",
+          "maximum number of insns fetched for a single thread before switching",
+          &max_fetches_before_switch, /* default */1,
+          /* print */TRUE, /* format */NULL);
+
 }
 
 /* check simulator-specific option values */
@@ -1195,6 +1211,9 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (res_fpmult > MAX_INSTS_PER_CLASS)
     fatal("number of FP mult/div's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_FPMULT_INDEX].quantity = res_fpmult;
+
+  if (max_threads > MAX_THREADS)
+    fatal("number of threads must be <= MAX_THREADS");
 }
 
 /* print simulator-specific configuration information */
@@ -1578,6 +1597,9 @@ ruu_init(void)
 
 static void
 thread_states_init(void) {
+  thread_states = calloc(max_threads, sizeof(struct thread_state));
+  if (!thread_states)
+    fatal("out of virtual memory");
   for (int i=0; i < max_threads; i++) {
     thread_states[i].in_use = FALSE;
     thread_states[i].spec_level = -1;
