@@ -2687,7 +2687,7 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
-        fprintf(stderr, "addr not ready\n", );
+        fprintf(stderr, "addr not ready\n");
         int test_thread;
         still_valid[curr_thread_id] = FALSE;
         for (test_thread = 0; test_thread < max_threads; test_thread++) {
