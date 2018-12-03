@@ -3124,6 +3124,7 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
 static void
 tracer_recover(struct RUU_station *rs_branch)
 {
+  fprintf(stderr, "begin tracer recover\n", );
   int i;
   struct spec_mem_ent *ent, *ent_next;
 
@@ -3179,6 +3180,7 @@ tracer_recover(struct RUU_station *rs_branch)
 
 static void
 clear_thread_from_ifq(int thread_id) {
+  fprintf(stderr, "begin clearing ifq\n", );
   int fetch_index = fetch_head;
    while (fetch_index != fetch_tail) {
     if (fetch_data[fetch_index].thread_id == thread_id) {
@@ -4395,13 +4397,14 @@ ruu_dispatch(void)
   }
 
   /* Now fork if possible */
+ /*
  if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected) {
    int successful_fork = try_to_fork(regs.regs_NPC, rs);
    if (successful_fork) {
      thread_states[curr_thread_id].fork_counter++;
      rs->fork_counter = thread_states[curr_thread_id].fork_counter;
    }
- }
+ }*/
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
