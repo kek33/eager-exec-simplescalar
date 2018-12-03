@@ -2465,23 +2465,19 @@ ruu_writeback(void)
 	      struct CV_link link;
 	      struct RS_link *olink, *olink_next;
 
-	      if (rs->spec_mode)
-		{
-		  /* update the speculative create vector, future operations
-		     get value from later creator or architected reg file */
-		  link = spec_create_vector[spec_level][rs->onames[i]];
-		  if (/* !NULL */link.rs
-		      && /* refs RS */(link.rs == rs && link.odep_num == i))
-		    {
-		      /* the result can now be read from a physical register,
-			 indicate this as so */
-		      spec_create_vector[spec_level][rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[spec_level][rs->onames[i]] = sim_cycle;
-		    }
-		  /* else, creator invalidated or there is another creator */
-		}
-	      else
-		{
+	     for (int s=0; s<=spec_level; s++) {
+         link = spec_create_vector[s][rs->onames[i]];
+   		  if (/* !NULL */link.rs
+   		      && /* refs RS */(link.rs == rs && link.odep_num == i))
+   		    {
+   		      /* the result can now be read from a physical register,
+   			 indicate this as so */
+   		      spec_create_vector[s][rs->onames[i]] = CVLINK_NULL;
+   		      spec_create_vector_rt[s][rs->onames[i]] = sim_cycle;
+   		    }
+       }
+
+		if (rs->spec_mode == FALSE) {
 		  /* update the non-speculative create vector, future
 		     operations get value from later creator or architected
 		     reg file */
