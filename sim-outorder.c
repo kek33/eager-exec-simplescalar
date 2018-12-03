@@ -4107,6 +4107,10 @@ ruu_dispatch(void)
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
         spec_level = 0;
+        memcpy(spec_create_vector[spec_level], create_vector,
+  			 MD_TOTAL_REGS * sizeof(struct CV_link));
+  		  memcpy(spec_create_vector_rt[spec_level],
+  			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
