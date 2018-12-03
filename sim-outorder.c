@@ -2528,6 +2528,7 @@ ruu_writeback(void)
             }
           }
       } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
+        fprintf(stderr, "Recover instruction reached\n", );
         if (rs->in_LSQ)
     	    panic("mis-predicted load or store?!?!?");
      	  /* recover processor state and reinit fetch to correct path */
