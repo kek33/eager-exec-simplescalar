@@ -3655,6 +3655,7 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
 	return "register number out of range";
   int spec_mode = thread_states[0].spec_mode;
   int spec_level = thread_states[0].spec_level;
+  int curr_thread_id = 0;
 
       if (!is_write)
 	{
