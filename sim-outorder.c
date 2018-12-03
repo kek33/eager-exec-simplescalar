@@ -1555,6 +1555,7 @@ struct RUU_station {
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
   int spec_level; /* spec level of the current insn */
+  int thread_id; /* thread id of the current insn */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -2167,6 +2168,8 @@ cv_dump(FILE *stream)				/* output stream */
     stream = stderr;
 
   fprintf(stream, "** create vector state **\n");
+  int spec_mode = thread_states[0].spec_mode;
+  int spec_level = thread_states[0].spec_level;
 
   for (i=0; i < MD_TOTAL_REGS; i++)
     {
@@ -2937,7 +2940,7 @@ rspec_dump(FILE *stream)			/* output stream */
   fprintf(stream, "** speculative register contents **\n");
 
   fprintf(stream, "spec_mode: %s\n", thread_states[0].spec_mode ? "t" : "f");
-
+  int spec_level = 0;
   /* dump speculative integer regs */
   for (i=0; i < MD_NUM_IREGS; i++)
     {
@@ -3001,6 +3004,7 @@ struct fetch_rec {
   struct bpred_update_t dir_update;	/* bpred direction update info */
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
+  int thread_id; /* thread id of the fetched instruction */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -3649,6 +3653,8 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
     case rt_gpr:
       if (reg < 0 || reg >= MD_NUM_IREGS)
 	return "register number out of range";
+  int spec_mode = thread_states[0].spec_mode;
+  int spec_level = thread_states[0].spec_level;
 
       if (!is_write)
 	{
@@ -3999,6 +4005,7 @@ ruu_dispatch(void)
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
+    rs->thread_id = curr_thread_id;
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4027,6 +4034,7 @@ ruu_dispatch(void)
 	      lsq->seq = ++inst_seq;
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
 	      lsq->ptrace_seq = ptrace_seq++;
+        lsq->thread_id = curr_thread_id;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4556,6 +4564,9 @@ sim_main(void)
 
       for (icount=0; icount < fastfwd_count; icount++)
 	{
+    int spec_mode = FALSE;
+    int spec_level = -1;
+    int curr_thread_id = 0;
 	  /* maintain $r0 semantics */
 	  regs.regs_R[MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
