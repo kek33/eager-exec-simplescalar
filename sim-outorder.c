@@ -2487,7 +2487,6 @@ ruu_writeback(void)
 
       // if this is an instruction that triggers a fork, something must be squashed
       if (rs->triggers_fork) {
-          fprintf(stderr, "forking wb...\n");
           if (rs->in_LSQ)
             panic("load or store should not be triggering fork");
            /* if the branch is taken, should squash the current thread (up to the branch)
@@ -2529,7 +2528,6 @@ ruu_writeback(void)
             }
           }
       } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
-        fprintf(stderr, "recover wb...\n");
         if (rs->in_LSQ)
     	    panic("mis-predicted load or store?!?!?");
      	  /* recover processor state and reinit fetch to correct path */
@@ -2689,6 +2687,7 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
+        fprintf(stderr, "addr not ready\n", );
         int test_thread;
         still_valid[curr_thread_id] = FALSE;
         for (test_thread = 0; test_thread < max_threads; test_thread++) {
@@ -2704,6 +2703,7 @@ lsq_refresh(void)
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
+        fprintf(stderr, "addr ready but not data\n");
 	      /* sta known, but std unknown, may block a later store, record
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
@@ -2724,6 +2724,7 @@ lsq_refresh(void)
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
+        fprintf(stderr, "insn ready in refresh\n");
         int test_thread;
         for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
           if (std_unknowns[test_thread][j] == LSQ[index].addr) {
@@ -2752,6 +2753,7 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
+    fprintf(stderr, "load in refresh\n");
     if (!LSQ[index].squashed == TRUE) {
       for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
         if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
@@ -3126,7 +3128,6 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
 static void
 tracer_recover(struct RUU_station *rs_branch)
 {
-  fprintf(stderr, "begin tracer recover\n");
   int i;
   struct spec_mem_ent *ent, *ent_next;
 
@@ -3182,7 +3183,6 @@ tracer_recover(struct RUU_station *rs_branch)
 
 static void
 clear_thread_from_ifq(int thread_id) {
-  fprintf(stderr, "begin clearing ifq\n");
   int fetch_index = fetch_head;
    while (fetch_index != fetch_tail) {
     if (fetch_data[fetch_index].thread_id == thread_id) {
@@ -4896,7 +4896,6 @@ sim_main(void)
 
       /* commit entries from RUU/LSQ to architected register file */
       ruu_commit();
-      fprintf(stderr, "comm\n");
       /* service function unit release events */
       ruu_release_fu();
 
@@ -4905,23 +4904,19 @@ sim_main(void)
       /* service result completions, also readies dependent operations */
       /* ==> inserts operations into ready queue --> register deps resolved */
       ruu_writeback();
-      fprintf(stderr, "wb\n");
       if (!bugcompat_mode)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
 	  lsq_refresh();
-    fprintf(stderr, "lsq\n");
 	  /* issue operations ready to execute from a previous cycle */
 	  /* <== drains ready queue <-- ready operations commence execution */
 	  ruu_issue();
-    fprintf(stderr, "issue\n");
 	}
 
       /* decode and dispatch new operations */
       /* ==> insert ops w/ no deps or all regs ready --> reg deps resolved */
       ruu_dispatch();
-      fprintf(stderr, "dispatch\n");
 
       if (bugcompat_mode)
 	{
