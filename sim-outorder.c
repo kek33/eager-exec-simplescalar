@@ -4399,7 +4399,7 @@ ruu_dispatch(void)
    int successful_fork = try_to_fork(regs.regs_NPC, rs);
    if (successful_fork) {
      thread_states[curr_thread_id].fork_counter++;
-     rs->fork_counter = thread_states[dispatched_thread_id].fork_counter;
+     rs->fork_counter = thread_states[curr_thread_id].fork_counter;
    }
  }
 
