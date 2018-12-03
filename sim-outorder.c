@@ -2393,7 +2393,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
  */
 
 /* forward declarations */
-static void tracer_recover(void);
+static void tracer_recover(struct RUU_station *rs_branch);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2424,7 +2424,7 @@ ruu_writeback(void)
 
 	  /* recover processor state and reinit fetch to correct path */
 	  ruu_recover(rs - RUU);
-	  tracer_recover();
+	  tracer_recover(rs);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
 	  /* stall fetch until I-fetch and I-decode recover */
@@ -2973,7 +2973,7 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
    all register value copied-on-write bitmasks are reset, and the speculative
    memory hash table is cleared */
 static void
-tracer_recover(void)
+tracer_recover(struct RUU_station *rs_branch)
 {
   int i;
   struct spec_mem_ent *ent, *ent_next;
@@ -2983,8 +2983,10 @@ tracer_recover(void)
     panic("cannot recover unless in speculative mode");
 
   /* reset to non-speculative trace generation mode */
-  spec_mode = FALSE;
-  spec_level = -1;
+  spec_level = rs_branch->spec_level;
+  if (spec_level == -1) {
+    spec_mode = FALSE;
+  }
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
   BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
@@ -3022,7 +3024,7 @@ tracer_recover(void)
   /* reset IFETCH state */
   fetch_num = 0;
   fetch_tail = fetch_head = 0;
-  fetch_pred_PC = fetch_regs_PC = recover_PC;
+  fetch_pred_PC = fetch_regs_PC = rs_branch->next_PC;
 }
 
 /* initialize the speculative instruction state generator state */
@@ -4107,13 +4109,29 @@ ruu_dispatch(void)
   			 MD_TOTAL_REGS * sizeof(struct CV_link));
   		  memcpy(spec_create_vector_rt[spec_level],
   			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
-        memcpy(spec_regs_R[spec_level], regs.regs_R, sizeof(md_gpr_t));
+        memcpy(&spec_regs_R[spec_level], &regs.regs_R, sizeof(md_gpr_t));
         memcpy(&spec_regs_F[spec_level], &regs.regs_F, sizeof(md_fpr_t));
         memcpy(&spec_regs_C[spec_level], &regs.regs_C, sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
-	}
+	} else {
+    /* is the trace generator trasitioning into mis-speculation mode? */
+	  if (pred_PC != regs.regs_NPC && !fetch_redirected)
+	    {
+	      /* entering mis-speculation mode, indicate this and save PC */
+        spec_level++;
+        memcpy(spec_create_vector[spec_level], spec_create_vector[spec_level-1],
+  			 MD_TOTAL_REGS * sizeof(struct CV_link));
+  		  memcpy(spec_create_vector_rt[spec_level],
+  			 spec_create_vector_rt[spec_level-1], MD_TOTAL_REGS*sizeof(tick_t));
+        memcpy(&spec_regs_R[spec_level], &spec_regs_R[spec_level-1], sizeof(md_gpr_t));
+        memcpy(&spec_regs_F[spec_level], &spec_regs_F[spec_level-1], sizeof(md_fpr_t));
+        memcpy(&spec_regs_C[spec_level], &spec_regs_C[spec_level-1], sizeof(md_ctrl_t));
+	      rs->recover_inst = TRUE;
+	      recover_PC = regs.regs_NPC;
+	    }
+  }
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
