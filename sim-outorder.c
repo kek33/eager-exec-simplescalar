@@ -1545,6 +1545,7 @@ struct RUU_station {
      operands are known to be read (see lsq_refresh() for details on
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
+  int spec_level; /* spec level of the current insn */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -3947,6 +3948,7 @@ ruu_dispatch(void)
           rs->dir_update = *dir_update_ptr;
 	  rs->stack_recover_idx = stack_recover_idx;
 	  rs->spec_mode = spec_mode;
+    rs->spec_level = spec_level;
 	  rs->addr = 0;
 	  /* rs->tag is already set */
 	  rs->seq = ++inst_seq;
@@ -3974,6 +3976,7 @@ ruu_dispatch(void)
 	      lsq->dir_update.pmeta = NULL;
 	      lsq->stack_recover_idx = 0;
 	      lsq->spec_mode = spec_mode;
+        lsq->spec_level = spec_level;
 	      lsq->addr = addr;
 	      /* lsq->tag is already set */
 	      lsq->seq = ++inst_seq;
