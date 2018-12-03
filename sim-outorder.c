@@ -78,7 +78,9 @@
   i.e. if I misspeculate on a branch, I can't misspeculate down the next branch*/
 #define MAX_THREADS 16
 #define MAX_SPEC_LEVELS 128
-
+static int max_threads; /* maximum threads allowed to run */
+static int fork_penalty; /* penalty given for forking a branch */
+static int max_fetches_before_switch; /* max fetches for given thread before switching */
 
 /*
  * This file implements a very detailed out-of-order issue superscalar
