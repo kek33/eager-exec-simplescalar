@@ -3427,7 +3427,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* general purpose register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
+#define GPR(N)                  (spec_mode\
 				 ? spec_regs_R[spec_level][N]                       \
 				 : regs.regs_R[N])
 #define SET_GPR(N,EXPR)         (spec_mode				\
@@ -3441,7 +3441,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_L(N)                (spec_mode\
 				 ? spec_regs_F[spec_level].l[(N)]                   \
 				 : regs.regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
@@ -3449,7 +3449,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F[spec_level].l[(N)])			\
 				 : (regs.regs_F.l[(N)] = (EXPR)))
-#define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_F(N)                (spec_mode\
 				 ? spec_regs_F[spec_level].f[(N)]                   \
 				 : regs.regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
@@ -3457,7 +3457,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F[spec_level].f[(N)])			\
 				 : (regs.regs_F.f[(N)] = (EXPR)))
-#define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_D(N)                (spec_mode\
 				 ? spec_regs_F[spec_level].d[(N) >> 1]              \
 				 : regs.regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
@@ -3469,7 +3469,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
+#define HI			(spec_mode\
 				 ? spec_regs_C[spec_level].hi			\
 				 : regs.regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
@@ -3477,7 +3477,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
 				    spec_regs_C[spec_level].hi)			\
 				 : (regs.regs_C.hi = (EXPR)))
-#define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
+#define LO			(spec_mode\
 				 ? spec_regs_C[spec_level].lo			\
 				 : regs.regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
@@ -3485,7 +3485,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
 				    spec_regs_C[spec_level].lo)			\
 				 : (regs.regs_C.lo = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
+#define FCC			(spec_mode\
 				 ? spec_regs_C[spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
@@ -3499,7 +3499,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
+#define FPR_Q(N)		(spec_mode\
 				 ? spec_regs_F[spec_level].q[(N)]                   \
 				 : regs.regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	(spec_mode				\
@@ -3507,7 +3507,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
 				    spec_regs_F[spec_level].q[(N)])			\
 				 : (regs.regs_F.q[(N)] = (EXPR)))
-#define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
+#define FPR(N)			(spec_mode\
 				 ? spec_regs_F[spec_level].d[(N)]			\
 				 : regs.regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		(spec_mode				\
@@ -3519,7 +3519,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
+#define FPCR			(spec_mode\
 				 ? spec_regs_C[spec_level].fpcr			\
 				 : regs.regs_C.fpcr)
 #define SET_FPCR(EXPR)		(spec_mode				\
@@ -3527,7 +3527,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
 				    spec_regs_C[spec_level].fpcr)			\
 				 : (regs.regs_C.fpcr = (EXPR)))
-#define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
+#define UNIQ			(spec_mode\
 				 ? spec_regs_C[spec_level].uniq			\
 				 : regs.regs_C.uniq)
 #define SET_UNIQ(EXPR)		(spec_mode				\
@@ -3535,7 +3535,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
 				    spec_regs_C[spec_level].uniq)			\
 				 : (regs.regs_C.uniq = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
+#define FCC			(spec_mode\
 				 ? spec_regs_C[spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
@@ -4108,6 +4108,8 @@ ruu_dispatch(void)
   		  memcpy(spec_create_vector_rt[spec_level],
   			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
         memcpy(&spec_regs_R[spec_level], &regs.regs_R, sizeof(md_gpr_t));
+        memcpy(&spec_regs_F[spec_level], &regs.regs_F, sizeof(md_fpr_t));
+        memcpy(&spec_regs_C[spec_level], &regs.regs_C, sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
