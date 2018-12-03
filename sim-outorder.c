@@ -3111,6 +3111,7 @@ struct fetch_rec {
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
   int thread_id; /* thread id of the fetched instruction */
+  int squashed; /* is this squashed? */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -3158,7 +3159,7 @@ tracer_recover(struct RUU_station *rs_branch)
   /* Don't clear the entire fetch queue - just clear the entries associated with this thread */
   int fetch_index = fetch_head;
   while (fetch_index != fetch_tail) {
-    if (fetch_data[fetch_index].thread_id == thread_id) {
+    if (fetch_data[fetch_index].thread_id == rs_branch->thread_id) {
       fetch_data[fetch_index].squashed == TRUE;
       if (ptrace_active) {
         ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
@@ -3166,7 +3167,7 @@ tracer_recover(struct RUU_station *rs_branch)
     }
     fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
   }
-  if (fetch_data[fetch_tail].thread_id == thread_id) {
+  if (fetch_data[fetch_tail].thread_id == rs_branch->thread_id) {
     fetch_data[fetch_tail].squashed == TRUE;
     if (ptrace_active) {
       ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
@@ -4009,6 +4010,10 @@ ruu_dispatch(void)
       int spec_mode = thread_states[curr_thread_id].spec_mode;
       int spec_level = thread_states[curr_thread_id].spec_level;
 
+      if (fetch_data[fetch_head].squashed == TRUE) {
+        continue;
+      }
+
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       inst = fetch_data[fetch_head].IR;
       regs.regs_PC = fetch_data[fetch_head].regs_PC;
@@ -4656,6 +4661,8 @@ ruu_fetch(void)
       fetch_data[fetch_tail].pred_PC = thread_states[current_fetching_thread].fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].squashed = FALSE;
+      fetch_data[fetch_tail].thread_id = current_fetching_thread;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
