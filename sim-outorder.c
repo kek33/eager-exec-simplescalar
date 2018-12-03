@@ -2477,6 +2477,8 @@ ruu_writeback(void)
       if (!OPERANDS_READY(rs) || rs->queued || !rs->issued || rs->completed)
 	panic("inst completed and !ready, !issued, or completed");
 
+      fprintf(stderr, "Is anything even reaching the event queue?\n");
+
       /* operation has completed */
       rs->completed = TRUE;
 
