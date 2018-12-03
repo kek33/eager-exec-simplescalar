@@ -4107,6 +4107,7 @@ ruu_dispatch(void)
   			 MD_TOTAL_REGS * sizeof(struct CV_link));
   		  memcpy(spec_create_vector_rt[spec_level],
   			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
+        memcpy(&spec_regs_R[spec_level], &regs.regs_R, sizeof(md_gpr_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
