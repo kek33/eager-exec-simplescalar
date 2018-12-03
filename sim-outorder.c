@@ -2,20 +2,20 @@
 
 /* SimpleScalar(TM) Tool Suite
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
- * All Rights Reserved. 
- * 
+ * All Rights Reserved.
+ *
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
  * YOU ARE AGREEING TO THESE TERMS AND CONDITIONS.
- * 
+ *
  * No portion of this work may be used by any commercial entity, or for any
  * commercial purpose, without the prior, written permission of SimpleScalar,
  * LLC (info@simplescalar.com). Nonprofit and noncommercial use is permitted
  * as described below.
- * 
+ *
  * 1. SimpleScalar is provided AS IS, with no warranty of any kind, express
  * or implied. The user of the program accepts full responsibility for the
  * application of the program and the use of any results.
- * 
+ *
  * 2. Nonprofit and noncommercial use is encouraged. SimpleScalar may be
  * downloaded, compiled, executed, copied, and modified solely for nonprofit,
  * educational, noncommercial research, and noncommercial scholarship
@@ -24,13 +24,13 @@
  * solely for nonprofit, educational, noncommercial research, and
  * noncommercial scholarship purposes provided that this notice in its
  * entirety accompanies all copies.
- * 
+ *
  * 3. ALL COMMERCIAL USE, AND ALL USE BY FOR PROFIT ENTITIES, IS EXPRESSLY
  * PROHIBITED WITHOUT A LICENSE FROM SIMPLESCALAR, LLC (info@simplescalar.com).
- * 
+ *
  * 4. No nonprofit user may place any restrictions on the use of this software,
  * including as modified by the user, by any other authorized user.
- * 
+ *
  * 5. Noncommercial and nonprofit users may distribute copies of SimpleScalar
  * in compiled or executable form as set forth in Section 2, provided that
  * either: (A) it is accompanied by the corresponding machine-readable source
@@ -40,11 +40,11 @@
  * must permit verbatim duplication by anyone, or (C) it is distributed by
  * someone who received only the executable form, and is accompanied by a
  * copy of the written offer of source code.
- * 
+ *
  * 6. SimpleScalar was developed by Todd M. Austin, Ph.D. The tool suite is
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
- * 
+ *
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
 
@@ -72,6 +72,13 @@
 #include "ptrace.h"
 #include "dlite.h"
 #include "sim.h"
+
+/* Need to define these at compile time
+  sim-outorder has no way of recovering past a single level of misspeculation
+  i.e. if I misspeculate on a branch, I can't misspeculate down the next branch*/
+#define MAX_THREADS 16
+#define MAX_SPEC_LEVELS 128
+
 
 /*
  * This file implements a very detailed out-of-order issue superscalar
@@ -356,6 +363,7 @@ static unsigned int ptrace_seq = 0;
    to occur that resets processor register and memory state back to the last
    precise state */
 static int spec_mode = FALSE;
+static int spec_level = -1;
 
 /* cycles until fetch issue resumes */
 static unsigned ruu_fetch_issue_delay = 0;
@@ -573,7 +581,7 @@ dtlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 void
 sim_reg_options(struct opt_odb_t *odb)
 {
-  opt_reg_header(odb, 
+  opt_reg_header(odb,
 "sim-outorder: This simulator implements a very detailed out-of-order issue\n"
 "superscalar processor with a two-level memory system and speculative\n"
 "execution support.  This simulator is a performance simulator, tracking the\n"
@@ -872,6 +880,19 @@ sim_reg_options(struct opt_odb_t *odb)
   opt_reg_flag(odb, "-bugcompat",
 	       "operate in backward-compatible bugs mode (for testing only)",
 	       &bugcompat_mode, /* default */FALSE, /* print */TRUE, NULL);
+
+  opt_reg_int(odb, "-max:threads",
+        "maximum number of threads at any given moment",
+        &max_threads, /* default */1,
+        /* print */TRUE, /* format */NULL);
+   opt_reg_int(odb, "-fork_penalty",
+         "penalty to total cycles for forking a thread",
+         &fork_penalty, /* default */0,
+         /* print */TRUE, /* format */NULL);
+   opt_reg_int(odb, "-max:fetches_before_switch",
+         "maximum number of insns fetched for a single thread before switching",
+         &max_fetches_before_switch, /* default */1,
+         /* print */TRUE, /* format */NULL);
 }
 
 /* check simulator-specific option values */
@@ -1152,25 +1173,25 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (res_ialu > MAX_INSTS_PER_CLASS)
     fatal("number of integer ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IALU_INDEX].quantity = res_ialu;
-  
+
   if (res_imult < 1)
     fatal("number of integer multiplier/dividers must be greater than zero");
   if (res_imult > MAX_INSTS_PER_CLASS)
     fatal("number of integer mult/div's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IMULT_INDEX].quantity = res_imult;
-  
+
   if (res_memport < 1)
     fatal("number of memory system ports must be greater than zero");
   if (res_memport > MAX_INSTS_PER_CLASS)
     fatal("number of memory system ports must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_MEMPORT_INDEX].quantity = res_memport;
-  
+
   if (res_fpalu < 1)
     fatal("number of floating point ALU's must be greater than zero");
   if (res_fpalu > MAX_INSTS_PER_CLASS)
     fatal("number of floating point ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_FPALU_INDEX].quantity = res_fpalu;
-  
+
   if (res_fpmult < 1)
     fatal("number of floating point multiplier/dividers must be > zero");
   if (res_fpmult > MAX_INSTS_PER_CLASS)
@@ -2054,27 +2075,27 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
    details on this process */
 static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
 static struct CV_link create_vector[MD_TOTAL_REGS];
-static struct CV_link spec_create_vector[MD_TOTAL_REGS];
+static struct CV_link spec_create_vector[MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* these arrays shadow the create vector an indicate when a register was
    last created */
 static tick_t create_vector_rt[MD_TOTAL_REGS];
-static tick_t spec_create_vector_rt[MD_TOTAL_REGS];
+static tick_t spec_create_vector_rt[MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
 #define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector[N]                \
+				 ? spec_create_vector[spec_level][N]                \
 				 : create_vector[N])
 
 /* read a create vector timestamp entry */
 #define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector_rt[N]             \
+				 ? spec_create_vector_rt[spec_level][N]             \
 				 : create_vector_rt[N])
 
 /* set a create vector entry */
 #define SET_CREATE_VECTOR(N, L) (spec_mode                              \
 				 ? (BITMAP_SET(use_spec_cv, CV_BMAP_SZ, (N)),\
-				    spec_create_vector[N] = (L))        \
+				    spec_create_vector[spec_level][N] = (L))        \
 				 : (create_vector[N] = (L)))
 
 /* initialize the create vector */
@@ -2089,8 +2110,8 @@ cv_init(void)
     {
       create_vector[i] = CVLINK_NULL;
       create_vector_rt[i] = 0;
-      spec_create_vector[i] = CVLINK_NULL;
-      spec_create_vector_rt[i] = 0;
+      spec_create_vector[spec_level][i] = CVLINK_NULL;
+      spec_create_vector_rt[spec_level][i] = 0;
     }
 
   /* all create vector entries are non-speculative */
@@ -2213,7 +2234,7 @@ ruu_commit(void)
 	  /* invalidate load/store operation instance */
 	  LSQ[LSQ_head].tag++;
           sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
-   
+
 	  /* indicate to pipeline trace that this instruction retired */
 	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
 	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
@@ -2319,7 +2340,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 	      /* blow away the consuming op list */
 	      LSQ[LSQ_index].odep_list[i] = NULL;
 	    }
-      
+
 	  /* squash this LSQ entry */
 	  LSQ[LSQ_index].tag++;
 
@@ -2339,7 +2360,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 	  /* blow away the consuming op list */
 	  RUU[RUU_index].odep_list[i] = NULL;
 	}
-      
+
       /* squash this RUU entry */
       RUU[RUU_index].tag++;
 
@@ -2446,14 +2467,14 @@ ruu_writeback(void)
 		{
 		  /* update the speculative create vector, future operations
 		     get value from later creator or architected reg file */
-		  link = spec_create_vector[rs->onames[i]];
+		  link = spec_create_vector[spec_level][rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      spec_create_vector[rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[rs->onames[i]] = sim_cycle;
+		      spec_create_vector[spec_level][rs->onames[i]] = CVLINK_NULL;
+		      spec_create_vector_rt[spec_level][rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2773,7 +2794,7 @@ ruu_issue(void)
 			  eventq_queue_event(rs, sim_cycle + fu->oplat);
 
 			  /* entered execute stage, indicate in pipe trace */
-			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE, 
+			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE,
 					  rs->ea_comp ? PEV_AGEN : 0);
 			}
 
@@ -2883,7 +2904,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, i))
 	{
-	  md_print_ireg(spec_regs_R, i, stream);
+	  md_print_ireg(spec_regs_R[spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2893,7 +2914,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, i))
 	{
-	  md_print_fpreg(spec_regs_F, i, stream);
+	  md_print_fpreg(spec_regs_F[spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2903,7 +2924,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_C, C_BMAP_SZ, i))
 	{
-	  md_print_creg(spec_regs_C, i, stream);
+	  md_print_creg(spec_regs_C[spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2965,6 +2986,7 @@ tracer_recover(void)
 
   /* reset to non-speculative trace generation mode */
   spec_mode = FALSE;
+  spec_level = -1;
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
   BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
@@ -3408,12 +3430,12 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
-				 ? spec_regs_R[N]                       \
+				 ? spec_regs_R[spec_level][N]                       \
 				 : regs.regs_R[N])
 #define SET_GPR(N,EXPR)         (spec_mode				\
-				 ? ((spec_regs_R[N] = (EXPR)),		\
+				 ? ((spec_regs_R[spec_level][N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
-				    spec_regs_R[N])			\
+				    spec_regs_R[spec_level][N])			\
 				 : (regs.regs_R[N] = (EXPR)))
 
 #if defined(TARGET_PISA)
@@ -3422,56 +3444,56 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.l[(N)]                   \
+				 ? spec_regs_F[spec_level].l[(N)]                   \
 				 : regs.regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[spec_level].l[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.l[(N)])			\
+				    spec_regs_F[spec_level].l[(N)])			\
 				 : (regs.regs_F.l[(N)] = (EXPR)))
 #define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.f[(N)]                   \
+				 ? spec_regs_F[spec_level].f[(N)]                   \
 				 : regs.regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[spec_level].f[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.f[(N)])			\
+				    spec_regs_F[spec_level].f[(N)])			\
 				 : (regs.regs_F.f[(N)] = (EXPR)))
 #define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.d[(N) >> 1]              \
+				 ? spec_regs_F[spec_level].d[(N) >> 1]              \
 				 : regs.regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
+				 ? ((spec_regs_F[spec_level].d[(N) >> 1] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.d[(N) >> 1])		\
+				    spec_regs_F[spec_level].d[(N) >> 1])		\
 				 : (regs.regs_F.d[(N) >> 1] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
-				 ? spec_regs_C.hi			\
+				 ? spec_regs_C[spec_level].hi			\
 				 : regs.regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.hi = (EXPR)),		\
+				 ? ((spec_regs_C[spec_level].hi = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
-				    spec_regs_C.hi)			\
+				    spec_regs_C[spec_level].hi)			\
 				 : (regs.regs_C.hi = (EXPR)))
 #define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
-				 ? spec_regs_C.lo			\
+				 ? spec_regs_C[spec_level].lo			\
 				 : regs.regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.lo = (EXPR)),		\
+				 ? ((spec_regs_C[spec_level].lo = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
-				    spec_regs_C.lo)			\
+				    spec_regs_C[spec_level].lo)			\
 				 : (regs.regs_C.lo = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+				 ? spec_regs_C[spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs_C[spec_level].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
-				    spec_regs_C.fcc)			\
+				    spec_regs_C[spec_level].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #elif defined(TARGET_ALPHA)
@@ -3480,48 +3502,48 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.q[(N)]                   \
+				 ? spec_regs_F[spec_level].q[(N)]                   \
 				 : regs.regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	(spec_mode				\
-				 ? ((spec_regs_F.q[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[spec_level].q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.q[(N)])			\
+				    spec_regs_F[spec_level].q[(N)])			\
 				 : (regs.regs_F.q[(N)] = (EXPR)))
 #define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.d[(N)]			\
+				 ? spec_regs_F[spec_level].d[(N)]			\
 				 : regs.regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		(spec_mode				\
-				 ? ((spec_regs_F.d[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[spec_level].d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.d[(N)])			\
+				    spec_regs_F[spec_level].d[(N)])			\
 				 : (regs.regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
-				 ? spec_regs_C.fpcr			\
+				 ? spec_regs_C[spec_level].fpcr			\
 				 : regs.regs_C.fpcr)
 #define SET_FPCR(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fpcr = (EXPR)),	\
+				 ? ((spec_regs_C[spec_level].fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
-				    spec_regs_C.fpcr)			\
+				    spec_regs_C[spec_level].fpcr)			\
 				 : (regs.regs_C.fpcr = (EXPR)))
 #define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
-				 ? spec_regs_C.uniq			\
+				 ? spec_regs_C[spec_level].uniq			\
 				 : regs.regs_C.uniq)
 #define SET_UNIQ(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.uniq = (EXPR)),	\
+				 ? ((spec_regs_C[spec_level].uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
-				    spec_regs_C.uniq)			\
+				    spec_regs_C[spec_level].uniq)			\
 				 : (regs.regs_C.uniq = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+				 ? spec_regs_C[spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs_C[spec_level].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
-				    spec_regs_C.fcc)			\
+				    spec_regs_C[spec_level].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #else
@@ -3771,9 +3793,9 @@ ruu_dispatch(void)
 	}
 
       /* maintain $r0 semantics (in spec and non-spec space) */
-      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
+      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[spec_level][MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
+      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F[spec_level].d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
       if (!spec_mode)
@@ -4082,6 +4104,7 @@ ruu_dispatch(void)
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
+        spec_level = 0;
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
@@ -4277,7 +4300,7 @@ ruu_fetch(void)
 
 	  /* pre-decode instruction, used for bpred stats recording */
 	  MD_SET_OPCODE(op, inst);
-	  
+
 	  /* get the next predicted fetch address; only use branch predictor
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
