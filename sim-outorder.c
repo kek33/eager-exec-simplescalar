@@ -2487,6 +2487,7 @@ ruu_writeback(void)
 
       // if this is an instruction that triggers a fork, something must be squashed
       if (rs->triggers_fork) {
+          fprintf(stderr, "forking wb...\n");
           if (rs->in_LSQ)
             panic("load or store should not be triggering fork");
            /* if the branch is taken, should squash the current thread (up to the branch)
@@ -2528,6 +2529,7 @@ ruu_writeback(void)
             }
           }
       } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
+        fprintf(stderr, "recover wb...\n");
         if (rs->in_LSQ)
     	    panic("mis-predicted load or store?!?!?");
      	  /* recover processor state and reinit fetch to correct path */
