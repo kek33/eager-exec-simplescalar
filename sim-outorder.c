@@ -2687,7 +2687,6 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
-        fprintf(stderr, "addr not ready\n");
         int test_thread;
         still_valid[curr_thread_id] = FALSE;
         for (test_thread = 0; test_thread < max_threads; test_thread++) {
@@ -2703,13 +2702,14 @@ lsq_refresh(void)
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
-        fprintf(stderr, "addr ready but not data\n");
 	      /* sta known, but std unknown, may block a later store, record
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
 		 very small */
 
         int test_thread;
+        if (n_std_unknowns[curr_thread_id] == MAX_STD_UNKNOWNS)
+          fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
         std_unknowns[curr_thread_id][n_std_unknowns[curr_thread_id]++] = LSQ[index].addr;
         // Also must check all of the children of this branch, assuming they are upstream from this
         for (test_thread = 0; test_thread < max_threads; test_thread++) {
@@ -2724,14 +2724,12 @@ lsq_refresh(void)
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
-        fprintf(stderr, "insn ready in refresh\n");
         int test_thread;
         for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
-          if (std_unknowns[test_thread][j] == LSQ[index].addr) {
-            std_unknowns[test_thread][j] = 0;
+          if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+            std_unknowns[curr_thread_id][j] = 0;
           }
         }
-
         for (test_thread = 0; test_thread < max_threads; test_thread++) {
           if (thread_states[test_thread].in_use == TRUE &&
             (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
