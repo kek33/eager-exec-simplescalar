@@ -4107,10 +4107,13 @@ ruu_dispatch(void)
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
         spec_level = 0;
-        /* Initialize spec create vectors */
-        for (int n=0; n < MD_TOTAL_REGS; n++) {
-          spec_create_vector[spec_level][n] = create_vector[n];
-        }
+
+        /* Need to copy over the create vectors on entering spec mode */
+  		  memcpy(spec_create_vector[spec_level], create_vector,
+  			 SS_TOTAL_REGS * sizeof(struct CV_link));
+  		  memcpy(spec_create_vector_rt[spec_level],
+  			 create_vector_rt, SS_TOTAL_REGS*sizeof(SS_TIME_TYPE));
+
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
