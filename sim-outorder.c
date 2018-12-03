@@ -4891,7 +4891,7 @@ sim_main(void)
 
       /* commit entries from RUU/LSQ to architected register file */
       ruu_commit();
-      fprintf(stderr, "comm\n", );
+      fprintf(stderr, "comm\n");
       /* service function unit release events */
       ruu_release_fu();
 
@@ -4900,23 +4900,23 @@ sim_main(void)
       /* service result completions, also readies dependent operations */
       /* ==> inserts operations into ready queue --> register deps resolved */
       ruu_writeback();
-      fprintf(stderr, "wb\n", );
+      fprintf(stderr, "wb\n");
       if (!bugcompat_mode)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
 	  lsq_refresh();
-    fprintf(stderr, "lsq\n", );
+    fprintf(stderr, "lsq\n");
 	  /* issue operations ready to execute from a previous cycle */
 	  /* <== drains ready queue <-- ready operations commence execution */
 	  ruu_issue();
-    fprintf(stderr, "issue\n", );
+    fprintf(stderr, "issue\n");
 	}
 
       /* decode and dispatch new operations */
       /* ==> insert ops w/ no deps or all regs ready --> reg deps resolved */
       ruu_dispatch();
-      fprintf(stderr, "dispatch\n", );
+      fprintf(stderr, "dispatch\n");
 
       if (bugcompat_mode)
 	{
