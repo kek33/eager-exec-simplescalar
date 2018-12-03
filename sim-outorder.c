@@ -2085,12 +2085,12 @@ static tick_t create_vector_rt[MD_TOTAL_REGS];
 static tick_t spec_create_vector_rt[MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
-#define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
+#define CREATE_VECTOR(N)        (spec_mode\
 				 ? spec_create_vector[spec_level][N]                \
 				 : create_vector[N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
+#define CREATE_VECTOR_RT(N)     (spec_mode\
 				 ? spec_create_vector_rt[spec_level][N]             \
 				 : create_vector_rt[N])
 
