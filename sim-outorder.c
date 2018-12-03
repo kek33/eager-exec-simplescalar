@@ -1556,6 +1556,10 @@ struct RUU_station {
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
   int spec_level; /* spec level of the current insn */
   int thread_id; /* thread id of the current insn */
+  int triggers_fork; /* does this instruction trigger a fork? */
+  int fork_id; /* id of the thread that forked off of this */
+  int fork_counter; /* count the number of forks this thread has created at this point (for lsq) */
+  int squashed; /* if this is squashed, it should not be committed - counts as nop */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -2202,6 +2206,38 @@ ruu_commit(void)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
 
+      /* If this is squashed, change head pointer and move on */
+      if (rs->squashed) {
+          if (RUU[RUU_head].ea_comp) {
+              if (!LSQ[LSQ_head].squashed) {
+                  panic("ruu and lsq squashing out of sync");
+              }
+              LSQ[LSQ_head].tag++;
+                  sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+         	  /* indicate to pipeline trace that this instruction retired */
+        	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
+        	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+         	  /* commit head of LSQ as well */
+        	  LSQ_head = (LSQ_head + 1) % LSQ_size;
+        	  LSQ_num--;
+          }
+          RUU[RUU_head].tag++;
+          sim_slip += (sim_cycle - RUU[RUU_head].slip);
+          ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
+          ptrace_endinst(RUU[RUU_head].ptrace_seq);
+           /* commit head entry of RUU */
+          RUU_head = (RUU_head + 1) % RUU_size;
+          RUU_num--;
+           /* one more instruction committed to architected state */
+          committed++;
+      }
+
+      // The forked thread off this is the correct one, so this can retire now
+      if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+        thread_states[rs->thread_id].in_use = FALSE;
+      }
+
+
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
@@ -2343,7 +2379,7 @@ ruu_commit(void)
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
 static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
+ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
 {
   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
@@ -2384,14 +2420,13 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 	  /* squash this LSQ entry */
 	  LSQ[LSQ_index].tag++;
+    LSQ[LSQ_index].squashed = TRUE;
 
 	  /* indicate in pipetrace that this instruction was squashed */
 	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
 
 	  /* go to next earlier LSQ slot */
-	  LSQ_prev_tail = LSQ_index;
 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
 	}
 
       /* recover any resources used by this RUU operation */
@@ -2404,26 +2439,15 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
       /* squash this RUU entry */
       RUU[RUU_index].tag++;
+      RUU[RUU_index].squashed = TRUE;
 
       /* indicate in pipetrace that this instruction was squashed */
       ptrace_endinst(RUU[RUU_index].ptrace_seq);
 
       /* go to next earlier slot in the RUU */
-      RUU_prev_tail = RUU_index;
       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
     }
 
-  /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
-
-  /* revert create vector back to last precise create vector state, NOTE:
-     this is accomplished by resetting all the copied-on-write bits in the
-     USE_SPEC_CV bit vector */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
-
-  /* FIXME: could reset functional units at squash time */
 }
 
 
@@ -2433,6 +2457,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
 /* forward declarations */
 static void tracer_recover(struct RUU_station *rs_branch);
+static void clear_thread_from_ifq(int thread_id);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2455,22 +2480,65 @@ ruu_writeback(void)
       /* operation has completed */
       rs->completed = TRUE;
 
-      /* does this operation reveal a mis-predicted branch? */
-      if (rs->recover_inst)
-	{
-	  if (rs->in_LSQ)
-	    panic("mis-predicted load or store?!?!?");
+      // if this instruction got squashed after being placed in the event queue
+      if (rs->squashed) {
+          continue;
+      }
 
-	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
-	  tracer_recover(rs);
-	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
+      // if this is an instruction that triggers a fork, something must be squashed
+      if (rs->triggers_fork) {
+          if (rs->in_LSQ)
+            panic("load or store should not be triggering fork");
+           /* if the branch is taken, should squash the current thread (up to the branch)
+          otherwise, squash the forking thread */
+          if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+            ruu_recover(rs - RUU, rs->thread_id);
+            clear_thread_from_ifq(rs->thread_id);
+            int test_thread;
+            for (test_thread = 0; test_thread < max_threads; test_thread++) {
+              if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+                ruu_recover(rs - RUU, test_thread);
+                clear_thread_from_ifq(rs->thread_id);
+                // Free these threads and reset their parent fork pointers
+                thread_states[test_thread].in_use = FALSE;
+                for (int n = 0; n < max_threads; n++) {
+                  thread_states[test_thread].parent_fork_counters[n] = -1;
+                }
+              }
+            }
+            // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+          } else {
+            ruu_recover(rs-RUU, rs->fork_id);
+            clear_thread_from_ifq(rs->fork_id);
+            thread_states[rs->fork_id].in_use = FALSE;
+            for (int n = 0; n < max_threads; n++) {
+              thread_states[rs->fork_id].parent_fork_counters[n] = -1;
+            }
+            int test_thread;
+            for (test_thread = 0; test_thread < max_threads; test_thread++) {
+              if (thread_states[test_thread].parent_fork_counters[rs->fork_id] >= rs->fork_counter) {
+                ruu_recover(rs - RUU, test_thread);
+                clear_thread_from_ifq(test_thread);
+                // Free these threads and reset their parent fork pointers
+                thread_states[test_thread].in_use = FALSE;
+                for (int n = 0; n < max_threads; n++) {
+                  thread_states[test_thread].parent_fork_counters[n] = -1;
+                }
+              }
+            }
+          }
+      } else if (rs->recover_inst) { /* does this reveal a mis-predicted branch? */
+        if (rs->in_LSQ)
+    	    panic("mis-predicted load or store?!?!?");
+     	  /* recover processor state and reinit fetch to correct path */
+    	  ruu_recover(rs - RUU, rs->thread_id);
+    	  tracer_recover(rs);
+    	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
+     	  /* stall fetch until I-fetch and I-decode recover */
+    	  ruu_fetch_issue_delay = ruu_branch_penalty;
+     	  /* continue writeback of the branch/control instruction */
+      }
 
-	  /* stall fetch until I-fetch and I-decode recover */
-	  ruu_fetch_issue_delay = ruu_branch_penalty;
-
-	  /* continue writeback of the branch/control instruction */
-	}
 
       /* if we speculatively update branch-predictor, do it here */
       if (pred
@@ -2592,16 +2660,26 @@ ruu_writeback(void)
 static void
 lsq_refresh(void)
 {
-  int i, j, index, n_std_unknowns;
-  md_addr_t std_unknowns[MAX_STD_UNKNOWNS];
+  int i, j, index;
+  md_addr_t std_unknowns[max_threads][MAX_STD_UNKNOWNS];
+  int n_std_unknowns[max_threads];
+  for (i=0; i < max_threads; i++) {
+    n_std_unknowns[i] = 0;
+  }
+  int still_valid[max_threads];
+  for (i=0 ; i < max_threads; i++) {
+      still_valid[i] = TRUE;
+  }
 
   /* scan entire queue for ready loads: scan from oldest instruction
      (head) until we reach the tail or an unresolved store, after which no
      other instruction will become ready */
-  for (i=0, index=LSQ_head, n_std_unknowns=0;
+  for (i=0, index=LSQ_head;
        i < LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
+      int curr_thread_id = LSQ[index].thread_id;
+      int curr_fork_counter = LSQ[index].fork_counter;
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
@@ -2609,9 +2687,18 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
+        int test_thread;
+        still_valid[curr_thread_id] = FALSE;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              still_valid[test_thread] = FALSE;
+            }
+        }
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
 	      /* sta unknown, blocks all later loads, stop search */
-	      break;
+	      //break;
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
@@ -2619,18 +2706,40 @@ lsq_refresh(void)
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
 		 very small */
-	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
-		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
-	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
+
+        int test_thread;
+        std_unknowns[curr_thread_id][n_std_unknowns[curr_thread_id]++] = LSQ[index].addr;
+        // Also must check all of the children of this branch, assuming they are upstream from this
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              if (n_std_unknowns[test_thread] == MAX_STD_UNKNOWNS)
+      		      fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
+              std_unknowns[test_thread][n_std_unknowns[test_thread]++] = LSQ[index].addr;
+            }
+        }
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
-	      /* a later STD known hides an earlier STD unknown */
-	      for (j=0; j<n_std_unknowns; j++)
-		{
-		  if (std_unknowns[j] == /* STA/STD known */LSQ[index].addr)
-		    std_unknowns[j] = /* bogus addr */0;
-		}
+        int test_thread;
+        for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+          if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+            std_unknowns[test_thread][j] = 0;
+          }
+        }
+
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+            for (j=0; j < n_std_unknowns[test_thread]; j++) {
+              if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+                std_unknowns[test_thread][j] = 0;
+              }
+            }
+          }
+        }
 	    }
 	}
 
@@ -2641,19 +2750,16 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
-	  /* no STA unknown conflict (because we got to this check), check for
-	     a STD unknown conflict */
-	  for (j=0; j<n_std_unknowns; j++)
-	    {
-	      /* found a relevant STD unknown? */
-	      if (std_unknowns[j] == LSQ[index].addr)
-		break;
-	    }
-	  if (j == n_std_unknowns)
-	    {
-	      /* no STA or STD unknown conflicts, put load on ready queue */
-	      readyq_enqueue(&LSQ[index]);
-	    }
+    if (!LSQ[index].squashed == TRUE) {
+      for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+        if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+          break;
+        }
+      }
+      if (j == n_std_unknowns) {
+        readyq_enqueue(&LSQ[index]);
+      }
+    }
 	}
     }
 }
@@ -3049,24 +3155,46 @@ tracer_recover(struct RUU_station *rs_branch)
       store_htable[i] = NULL;
     }
 
-  /* if pipetracing, indicate squash of instructions in the inst fetch queue */
-  if (ptrace_active)
-    {
-      while (fetch_num != 0)
-	{
-	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
-	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
-
-	  /* consume instruction from IFETCH -> DISPATCH queue */
-	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-	  fetch_num--;
-	}
+  /* Don't clear the entire fetch queue - just clear the entries associated with this thread */
+  int fetch_index = fetch_head;
+  while (fetch_index != fetch_tail) {
+    if (fetch_data[fetch_index].thread_id == thread_id) {
+      fetch_data[fetch_index].squashed == TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
     }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+  }
+  if (fetch_data[fetch_tail].thread_id == thread_id) {
+    fetch_data[fetch_tail].squashed == TRUE;
+    if (ptrace_active) {
+      ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
+    }
+  }
 
-  /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
   thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
+}
+
+static void
+clear_thread_from_ifq(int thread_id) {
+  int fetch_index = fetch_head;
+   while (fetch_index != fetch_tail) {
+    if (fetch_data[fetch_index].thread_id == thread_id) {
+      fetch_data[fetch_index].squashed == TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
+    }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+  }
+  if (fetch_data[fetch_tail].thread_id == thread_id) {
+    fetch_data[fetch_tail].squashed == TRUE;
+    if (ptrace_active) {
+      ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
+    }
+  }
+   thread_states[thread_id].keep_fetching = FALSE;
 }
 
 /* initialize the speculative instruction state generator state */
@@ -3764,6 +3892,69 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
    implementing in-order issue */
 static struct RS_link last_op = RSLINK_NULL_DATA;
 
+/* Checks to see if there's an available thread in order to fork */
+static int
+try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
+  int forking_thread = rs_branch->thread_id;
+  int forking_thread_counter = thread_states[forking_thread].fork_counter;
+  int fork_spec_level = thread_states[forking_thread].spec_level - 1;
+
+  int fork_thread_candidate = forking_thread + 1;
+  int has_found_fork_candidate = FALSE;
+  while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < max_threads)) {
+    if (thread_states[fork_thread_candidate].in_use == FALSE) {
+      has_found_fork_candidate = TRUE;
+    } else {
+      fork_thread_candidate ++;
+    }
+  }
+  if (has_found_fork_candidate == FALSE) {
+    fork_thread_candidate = 0;
+    while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < forking_thread)) {
+      if (thread_states[fork_thread_candidate].in_use == FALSE) {
+        has_found_fork_candidate = TRUE;
+      } else {
+        fork_thread_candidate ++;
+      }
+    }
+  }
+  // If no threads are available, just return.
+  if (has_found_fork_candidate == FALSE) {
+    return FALSE;
+  }
+
+  thread_states[fork_thread_candidate].in_use = TRUE;
+  thread_states[fork_thread_candidate].fork_counter = 0;
+  for (int i=0; i < max_threads; i++) {
+    thread_states[fork_thread_candidate].parent_fork_counters[i] = -1;
+  }
+  thread_states[fork_thread_candidate].parent_fork_counters[forking_thread] = forking_thread_counter;
+  thread_states[fork_thread_candidate].fetch_pred_PC = fork_pc;
+  thread_states[fork_thread_candidate].fetch_regs_PC = fork_pc - sizeof(md_inst_t);
+  thread_states[fork_thread_candidate].keep_fetching = TRUE;
+
+  if (thread_states[forking_thread].spec_mode == TRUE) {
+    thread_states[fork_thread_candidate].spec_mode = TRUE;
+    thread_states[fork_thread_candidate].spec_level = 0;
+
+    memcpy(spec_create_vector[fork_thread_candidate][0], spec_create_vector[forking_thread][fork_spec_level],
+     MD_TOTAL_REGS * sizeof(struct CV_link));
+    memcpy(spec_create_vector_rt[fork_thread_candidate][0],
+     spec_create_vector_rt[forking_thread][0], MD_TOTAL_REGS*sizeof(tick_t));
+    memcpy(&spec_regs_R[fork_thread_candidate][0], &spec_regs_R[forking_thread][fork_spec_level], sizeof(md_gpr_t));
+    memcpy(&spec_regs_F[fork_thread_candidate][0], &spec_regs_F[forking_thread][fork_spec_level], sizeof(md_fpr_t));
+    memcpy(&spec_regs_C[fork_thread_candidate][0], &spec_regs_C[forking_thread][fork_spec_level], sizeof(md_ctrl_t));
+  } else {
+    thread_states[fork_thread_candidate].spec_mode = FALSE;
+    thread_states[fork_thread_candidate].spec_level = -1;
+  }
+  rs_branch->triggers_fork = TRUE;
+  rs_branch->fork_id = fork_thread_candidate;
+
+  return TRUE;
+}
+
+
 /* dispatch instructions from the IFETCH -> DISPATCH queue: instructions are
    first decoded, then they allocated RUU (and LSQ for load/stores) resources
    and input and output dependence chains are updated accordingly */
@@ -4007,6 +4198,9 @@ ruu_dispatch(void)
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
     rs->thread_id = curr_thread_id;
+    rs->triggers_fork = FALSE;
+    rs->squashed = FALSE;
+    rs->fork_counter = thread_states[curr_thread_id].fork_counter;
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4036,6 +4230,9 @@ ruu_dispatch(void)
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
 	      lsq->ptrace_seq = ptrace_seq++;
         lsq->thread_id = curr_thread_id;
+        lsq->triggers_fork = FALSE;
+        lsq->squashed = TRUE;
+        lsq->fork_counter = thread_states[curr_thread_id].fork_counter;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4192,6 +4389,15 @@ ruu_dispatch(void)
 	    }
   }
 
+  /* Now fork if possible */
+ if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected) {
+   int successful_fork = try_to_fork(regs.regs_NPC, rs);
+   if (successful_fork) {
+     thread_states[curr_thread_id].fork_counter++;
+     rs->fork_counter = thread_states[dispatched_thread_id].fork_counter;
+   }
+ }
+
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
 		      (pred_PC[curr_thread_id] != regs.regs_NPC) ? PEV_MPOCCURED : 0);
@@ -4319,6 +4525,30 @@ ruu_fetch(void)
        && !done;
        i++)
     {
+
+      // If we've reached our quota of fetches for this thread, find the next thread to run
+      if (fetches_left_for_thread == 0) {
+        int has_found_new_thread = FALSE;
+        current_fetching_thread++;
+        while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
+          if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+            has_found_new_thread = TRUE;
+          } else {
+            current_fetching_thread++;
+          }
+        }
+        if (has_found_new_thread == FALSE) {
+          current_fetching_thread = 0;
+          while (has_found_new_thread == FALSE) {
+            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+              has_found_new_thread = TRUE;
+            } else {
+              current_fetching_thread++;
+            }
+          }
+        }
+      }
+
       /* fetch an instruction at the next predicted fetch address */
       thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
 
