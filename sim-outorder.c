@@ -2874,17 +2874,17 @@ ruu_issue(void)
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
 static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
-static md_gpr_t spec_regs_R;
+static md_gpr_t spec_regs_R[MAX_SPEC_LEVELS];
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
-static md_fpr_t spec_regs_F;
+static md_fpr_t spec_regs_F[MAX_SPEC_LEVELS];
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
-static md_ctrl_t spec_regs_C;
+static md_ctrl_t spec_regs_C[MAX_SPEC_LEVELS];
 
 /* dump speculative register state */
 static void
