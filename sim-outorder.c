@@ -2085,12 +2085,12 @@ static tick_t create_vector_rt[MD_TOTAL_REGS];
 static tick_t spec_create_vector_rt[MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
-#define CREATE_VECTOR(N)        (spec_mode\
+#define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
 				 ? spec_create_vector[spec_level][N]                \
 				 : create_vector[N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(N)     (spec_mode\
+#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
 				 ? spec_create_vector_rt[spec_level][N]             \
 				 : create_vector_rt[N])
 
@@ -4107,13 +4107,6 @@ ruu_dispatch(void)
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
         spec_level = 0;
-
-        /* Need to copy over the create vectors on entering spec mode */
-  		  memcpy(spec_create_vector[spec_level], create_vector,
-  			 MD_TOTAL_REGS * sizeof(struct CV_link));
-  		  memcpy(spec_create_vector_rt[spec_level],
-  			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
-
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
 	    }
