@@ -2751,7 +2751,6 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
-    fprintf(stderr, "load in refresh\n");
     if (!LSQ[index].squashed == TRUE) {
       for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
         if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
