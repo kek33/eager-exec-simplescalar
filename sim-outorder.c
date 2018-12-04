@@ -2717,10 +2717,6 @@ ruu_issue(void)
 	{
 	  struct RUU_station *rs = RSLINK_RS(node);
 
-    if (rs->squashed) {
-      continue;
-    }
-
 	  /* issue operation, both reg and mem deps have been satisfied */
 	  if (!OPERANDS_READY(rs) || !rs->queued
 	      || rs->issued || rs->completed)
