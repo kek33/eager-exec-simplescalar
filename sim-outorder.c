@@ -4339,6 +4339,29 @@ ruu_fetch(void)
        && !done;
        i++)
     {
+      // If we've reached our quota of fetches for this thread, find the next thread to run
+      if (fetches_left_for_thread == 0) {
+        int has_found_new_thread = FALSE;
+        current_fetching_thread++;
+        while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
+          if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+            has_found_new_thread = TRUE;
+          } else {
+            current_fetching_thread++;
+          }
+        }
+        if (has_found_new_thread == FALSE) {
+          current_fetching_thread = 0;
+          while (has_found_new_thread == FALSE) {
+            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+              has_found_new_thread = TRUE;
+            } else {
+              current_fetching_thread++;
+            }
+          }
+        }
+      }
+      
       /* fetch an instruction at the next predicted fetch address */
       thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
 
