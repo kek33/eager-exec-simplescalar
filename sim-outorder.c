@@ -2717,6 +2717,10 @@ ruu_issue(void)
 	{
 	  struct RUU_station *rs = RSLINK_RS(node);
 
+    if (rs->squashed) {
+      continue;
+    }
+
 	  /* issue operation, both reg and mem deps have been satisfied */
 	  if (!OPERANDS_READY(rs) || !rs->queued
 	      || rs->issued || rs->completed)
@@ -3044,8 +3048,6 @@ tracer_recover(struct RUU_station *rs_branch)
   thread_states[rs_branch->thread_id].spec_level = rs_branch->spec_level;
   if (rs_branch->spec_level == -1) {
     thread_states[rs_branch->thread_id].spec_mode = FALSE;
-  } else {
-    fprintf(stderr, "Recovering to speculative state \n");
   }
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
@@ -4361,7 +4363,7 @@ ruu_fetch(void)
           }
         }
       }
-      
+
       /* fetch an instruction at the next predicted fetch address */
       thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
 
