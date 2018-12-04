@@ -2202,7 +2202,7 @@ ruu_commit(void)
   while (RUU_num > 0 && committed < ruu_commit_width)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
-      
+
       if (rs->squashed) {
           if (RUU[RUU_head].ea_comp) {
               if (!LSQ[LSQ_head].squashed) {
@@ -2226,6 +2226,7 @@ ruu_commit(void)
           RUU_num--;
            /* one more instruction committed to architected state */
           committed++;
+          continue;
       }
 
       if (!rs->completed)
