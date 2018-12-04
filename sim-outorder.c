@@ -2342,89 +2342,78 @@ ruu_commit(void)
 
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
-static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
-{
-  int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
-  int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+ static void
+ ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
+ {
+   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
+   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
 
-  /* recover from the tail of the RUU towards the head until the branch index
-     is reached, this direction ensures that the LSQ can be synchronized with
-     the RUU */
+   /* recover from the tail of the RUU towards the head until the branch index
+      is reached, this direction ensures that the LSQ can be synchronized with
+      the RUU */
 
-  /* go to first element to squash */
-  RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+   /* go to first element to squash */
+   RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+   LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
 
-  /* traverse to older insts until the mispredicted branch is encountered */
-  while (RUU_index != branch_index)
-    {
-      /* the RUU should not drain since the mispredicted branch will remain */
-      if (!RUU_num)
-	panic("empty RUU");
+   /* traverse to older insts until the mispredicted branch is encountered */
+   while (RUU_index != branch_index)
+     {
+       /* the RUU should not drain since the mispredicted branch will remain */
+       if (!RUU_num)
+ 	panic("empty RUU");
 
-      /* should meet up with the tail first */
-      if (RUU_index == RUU_head)
-	panic("RUU head and tail broken");
+       /* should meet up with the tail first */
+       if (RUU_index == RUU_head)
+ 	panic("RUU head and tail broken");
 
-      /* is this operation an effective addr calc for a load or store? */
-      if (RUU[RUU_index].ea_comp)
-	{
-	  /* should be at least one load or store in the LSQ */
-	  if (!LSQ_num)
-	    panic("RUU and LSQ out of sync");
+       /* is this operation an effective addr calc for a load or store? */
+       if (RUU[RUU_index].ea_comp)
+ 	{
+ 	  /* should be at least one load or store in the LSQ */
+ 	  if (!LSQ_num)
+ 	    panic("RUU and LSQ out of sync");
 
-	  /* recover any resources consumed by the load or store operation */
-	  for (i=0; i<MAX_ODEPS; i++)
-	    {
-	      RSLINK_FREE_LIST(LSQ[LSQ_index].odep_list[i]);
-	      /* blow away the consuming op list */
-	      LSQ[LSQ_index].odep_list[i] = NULL;
-	    }
+ 	  /* recover any resources consumed by the load or store operation */
+ 	  for (i=0; i<MAX_ODEPS; i++)
+ 	    {
+ 	      RSLINK_FREE_LIST(LSQ[LSQ_index].odep_list[i]);
+ 	      /* blow away the consuming op list */
+ 	      LSQ[LSQ_index].odep_list[i] = NULL;
+ 	    }
 
-	  /* squash this LSQ entry */
-	  LSQ[LSQ_index].tag++;
+ 	  /* squash this LSQ entry */
+ 	  LSQ[LSQ_index].tag++;
+     LSQ[LSQ_index].squashed = TRUE;
 
-	  /* indicate in pipetrace that this instruction was squashed */
-	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
+ 	  /* indicate in pipetrace that this instruction was squashed */
+ 	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
 
-	  /* go to next earlier LSQ slot */
-	  LSQ_prev_tail = LSQ_index;
-	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
-	}
+ 	  /* go to next earlier LSQ slot */
+ 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+ 	}
 
-      /* recover any resources used by this RUU operation */
-      for (i=0; i<MAX_ODEPS; i++)
-	{
-	  RSLINK_FREE_LIST(RUU[RUU_index].odep_list[i]);
-	  /* blow away the consuming op list */
-	  RUU[RUU_index].odep_list[i] = NULL;
-	}
+       /* recover any resources used by this RUU operation */
+       for (i=0; i<MAX_ODEPS; i++)
+ 	{
+ 	  RSLINK_FREE_LIST(RUU[RUU_index].odep_list[i]);
+ 	  /* blow away the consuming op list */
+ 	  RUU[RUU_index].odep_list[i] = NULL;
+ 	}
 
-      /* squash this RUU entry */
-      RUU[RUU_index].tag++;
+       /* squash this RUU entry */
+       RUU[RUU_index].tag++;
+       RUU[RUU_index].squashed = TRUE;
 
-      /* indicate in pipetrace that this instruction was squashed */
-      ptrace_endinst(RUU[RUU_index].ptrace_seq);
+       /* indicate in pipetrace that this instruction was squashed */
+       ptrace_endinst(RUU[RUU_index].ptrace_seq);
 
-      /* go to next earlier slot in the RUU */
-      RUU_prev_tail = RUU_index;
-      RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
-    }
+       /* go to next earlier slot in the RUU */
+       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+     }
 
-  /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
+ }
 
-  /* revert create vector back to last precise create vector state, NOTE:
-     this is accomplished by resetting all the copied-on-write bits in the
-     USE_SPEC_CV bit vector */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
-
-  /* FIXME: could reset functional units at squash time */
-}
 
 
 /*
@@ -2462,7 +2451,7 @@ ruu_writeback(void)
 	    panic("mis-predicted load or store?!?!?");
 
 	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
+	  ruu_recover(rs - RUU, rs->thread_id);
 	  tracer_recover(rs);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
