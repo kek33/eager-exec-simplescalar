@@ -2718,6 +2718,7 @@ ruu_issue(void)
 	  struct RUU_station *rs = RSLINK_RS(node);
 
     if (rs->squashed) {
+      rs->queued = FALSE; /* unqueue node */
       continue;
     }
 
