@@ -2415,7 +2415,7 @@ ruu_commit(void)
 
  	  /* squash this LSQ entry */
  	  LSQ[LSQ_index].tag++;
-     LSQ[LSQ_index].squashed = TRUE;
+     //LSQ[LSQ_index].squashed = TRUE;
 
  	  /* indicate in pipetrace that this instruction was squashed */
  	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
@@ -2434,7 +2434,7 @@ ruu_commit(void)
 
        /* squash this RUU entry */
        RUU[RUU_index].tag++;
-       RUU[RUU_index].squashed = TRUE;
+       //RUU[RUU_index].squashed = TRUE;
 
        /* indicate in pipetrace that this instruction was squashed */
        ptrace_endinst(RUU[RUU_index].ptrace_seq);
