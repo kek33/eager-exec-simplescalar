@@ -2202,6 +2202,31 @@ ruu_commit(void)
   while (RUU_num > 0 && committed < ruu_commit_width)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
+      
+      if (rs->squashed) {
+          if (RUU[RUU_head].ea_comp) {
+              if (!LSQ[LSQ_head].squashed) {
+                  panic("ruu and lsq squashing out of sync");
+              }
+              LSQ[LSQ_head].tag++;
+                  sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+         	  /* indicate to pipeline trace that this instruction retired */
+        	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
+        	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+         	  /* commit head of LSQ as well */
+        	  LSQ_head = (LSQ_head + 1) % LSQ_size;
+        	  LSQ_num--;
+          }
+          RUU[RUU_head].tag++;
+          sim_slip += (sim_cycle - RUU[RUU_head].slip);
+          ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
+          ptrace_endinst(RUU[RUU_head].ptrace_seq);
+           /* commit head entry of RUU */
+          RUU_head = (RUU_head + 1) % RUU_size;
+          RUU_num--;
+           /* one more instruction committed to architected state */
+          committed++;
+      }
 
       if (!rs->completed)
 	{
