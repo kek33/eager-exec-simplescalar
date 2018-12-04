@@ -2208,7 +2208,6 @@ ruu_commit(void)
               if (!LSQ[LSQ_head].squashed) {
                   panic("ruu and lsq squashing out of sync");
               }
-              LSQ[LSQ_head].tag++;
                   sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
          	  /* indicate to pipeline trace that this instruction retired */
         	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
@@ -2217,7 +2216,6 @@ ruu_commit(void)
         	  LSQ_head = (LSQ_head + 1) % LSQ_size;
         	  LSQ_num--;
           }
-          RUU[RUU_head].tag++;
           sim_slip += (sim_cycle - RUU[RUU_head].slip);
           ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
           ptrace_endinst(RUU[RUU_head].ptrace_seq);
@@ -2415,7 +2413,7 @@ ruu_commit(void)
 
  	  /* squash this LSQ entry */
  	  LSQ[LSQ_index].tag++;
-     //LSQ[LSQ_index].squashed = TRUE;
+     LSQ[LSQ_index].squashed = TRUE;
 
  	  /* indicate in pipetrace that this instruction was squashed */
  	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
@@ -2434,7 +2432,7 @@ ruu_commit(void)
 
        /* squash this RUU entry */
        RUU[RUU_index].tag++;
-       //RUU[RUU_index].squashed = TRUE;
+       RUU[RUU_index].squashed = TRUE;
 
        /* indicate in pipetrace that this instruction was squashed */
        ptrace_endinst(RUU[RUU_index].ptrace_seq);
