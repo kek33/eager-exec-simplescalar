@@ -2718,8 +2718,9 @@ ruu_issue(void)
 	  struct RUU_station *rs = RSLINK_RS(node);
 
     if (rs->squashed) {
-      rs->queued = FALSE; /* unqueue node */
-      continue;
+      fprintf(stderr, "In spec mode: %d\n", rs->spec_mode);
+      fprintf(stderr, "Spec level: %d\n", rs->spec_level);
+      panic("link should not be valid if insn is squashed");
     }
 
 	  /* issue operation, both reg and mem deps have been satisfied */
