@@ -2724,6 +2724,8 @@ ruu_issue(void)
     if (rs->squashed) {
       fprintf(stderr, "In spec mode: %d\n", rs->spec_mode);
       fprintf(stderr, "Spec level: %d\n", rs->spec_level);
+      fprintf(stderr, "RS tag: %d\n", rs->tag);
+      fprintf(stderr, "Node tag: %d\n", node->tag);
       panic("link should not be valid if insn is squashed");
     }
 
