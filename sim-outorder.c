@@ -1556,6 +1556,7 @@ struct RUU_station {
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
   int spec_level; /* spec level of the current insn */
   int thread_id; /* thread id of the current insn */
+  int squashed;
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -3996,6 +3997,7 @@ ruu_dispatch(void)
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
     rs->thread_id = curr_thread_id;
+    rs->squashed = FALSE;
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4025,6 +4027,7 @@ ruu_dispatch(void)
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
 	      lsq->ptrace_seq = ptrace_seq++;
         lsq->thread_id = curr_thread_id;
+        lsq->squashed = FALSE;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
