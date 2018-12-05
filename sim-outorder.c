@@ -4571,7 +4571,7 @@ ruu_fetch(void)
             }
           }
         }
-        fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use
+        fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
         fprintf(stderr, "current fetching thread: %d\n", current_fetching_thread);
       }
 
