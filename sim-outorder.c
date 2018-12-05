@@ -3114,23 +3114,24 @@ tracer_recover(struct RUU_station *rs_branch)
       store_htable[i] = NULL;
     }
 
-  /* if pipetracing, indicate squash of instructions in the inst fetch queue */
-  if (ptrace_active)
-    {
-      while (fetch_num != 0)
-	{
-	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
-	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
-
-	  /* consume instruction from IFETCH -> DISPATCH queue */
-	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-	  fetch_num--;
-	}
+  /* Don't clear the entire fetch queue - just clear the entries associated with this thread */
+  int fetch_index = fetch_head;
+  while (fetch_index != fetch_tail) {
+    if (fetch_data[fetch_index].thread_id == rs_branch->thread_id) {
+      fetch_data[fetch_index].squashed == TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
     }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+  }
+  if (fetch_data[fetch_tail].thread_id == rs_branch->thread_id) {
+    fetch_data[fetch_tail].squashed == TRUE;
+    if (ptrace_active) {
+      ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
+    }
+  }
 
-  /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
   thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
 }
 
@@ -3829,6 +3830,69 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
    implementing in-order issue */
 static struct RS_link last_op = RSLINK_NULL_DATA;
 
+/* Checks to see if there's an available thread in order to fork */
+static int
+try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
+  int forking_thread = rs_branch->thread_id;
+  int forking_thread_counter = thread_states[forking_thread].fork_counter;
+  int fork_spec_level = thread_states[forking_thread].spec_level - 1;
+
+  int fork_thread_candidate = forking_thread + 1;
+  int has_found_fork_candidate = FALSE;
+  while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < max_threads)) {
+    if (thread_states[fork_thread_candidate].in_use == FALSE) {
+      has_found_fork_candidate = TRUE;
+    } else {
+      fork_thread_candidate ++;
+    }
+  }
+  if (has_found_fork_candidate == FALSE) {
+    fork_thread_candidate = 0;
+    while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < forking_thread)) {
+      if (thread_states[fork_thread_candidate].in_use == FALSE) {
+        has_found_fork_candidate = TRUE;
+      } else {
+        fork_thread_candidate ++;
+      }
+    }
+  }
+  // If no threads are available, just return.
+  if (has_found_fork_candidate == FALSE) {
+    return FALSE;
+  }
+
+  thread_states[fork_thread_candidate].in_use = TRUE;
+  thread_states[fork_thread_candidate].fork_counter = 0;
+  for (int i=0; i < max_threads; i++) {
+    thread_states[fork_thread_candidate].parent_fork_counters[i] = -1;
+  }
+  thread_states[fork_thread_candidate].parent_fork_counters[forking_thread] = forking_thread_counter;
+  thread_states[fork_thread_candidate].fetch_pred_PC = fork_pc;
+  thread_states[fork_thread_candidate].fetch_regs_PC = fork_pc - sizeof(md_inst_t);
+  thread_states[fork_thread_candidate].keep_fetching = TRUE;
+
+  if (thread_states[forking_thread].spec_mode == TRUE) {
+    thread_states[fork_thread_candidate].spec_mode = TRUE;
+    thread_states[fork_thread_candidate].spec_level = 0;
+
+    memcpy(spec_create_vector[fork_thread_candidate][0], spec_create_vector[forking_thread][fork_spec_level],
+     MD_TOTAL_REGS * sizeof(struct CV_link));
+    memcpy(spec_create_vector_rt[fork_thread_candidate][0],
+     spec_create_vector_rt[forking_thread][0], MD_TOTAL_REGS*sizeof(tick_t));
+    memcpy(&spec_regs_R[fork_thread_candidate][0], &spec_regs_R[forking_thread][fork_spec_level], sizeof(md_gpr_t));
+    memcpy(&spec_regs_F[fork_thread_candidate][0], &spec_regs_F[forking_thread][fork_spec_level], sizeof(md_fpr_t));
+    memcpy(&spec_regs_C[fork_thread_candidate][0], &spec_regs_C[forking_thread][fork_spec_level], sizeof(md_ctrl_t));
+  } else {
+    thread_states[fork_thread_candidate].spec_mode = FALSE;
+    thread_states[fork_thread_candidate].spec_level = -1;
+  }
+  rs_branch->triggers_fork = TRUE;
+  rs_branch->fork_id = fork_thread_candidate;
+
+  return TRUE;
+}
+
+
 /* dispatch instructions from the IFETCH -> DISPATCH queue: instructions are
    first decoded, then they allocated RUU (and LSQ for load/stores) resources
    and input and output dependence chains are updated accordingly */
@@ -3878,6 +3942,11 @@ ruu_dispatch(void)
 	  /* stall until last operation is ready to issue */
 	  break;
 	}
+      if (fetch_data[fetch_head].squashed == TRUE) {
+        fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
+        fetch_num--;
+        continue;
+      }
 
       int curr_thread_id = fetch_data[fetch_head].thread_id;
       int spec_mode = thread_states[curr_thread_id].spec_mode;
