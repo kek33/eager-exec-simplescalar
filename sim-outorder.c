@@ -2273,7 +2273,7 @@ ruu_commit(void)
 
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
-        fprintf(stderr, "But this needs to get triggered\n");
+        fprintf(stderr, "But this needs to get triggered, thread: %d\n", rs->thread_id);
         thread_states[rs->thread_id].in_use = FALSE;
         verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
       }
@@ -4193,8 +4193,8 @@ ruu_dispatch(void)
         }
 
       if (fault != md_fault_none)
-	fatal("non-speculative fault (%d) detected @ 0x%08p",
-	      fault, regs.regs_PC);
+	fatal("non-speculative fault (%d) for thread (%d) detected @ 0x%08p",
+	      fault, curr_thread_id, regs.regs_PC);
 
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
