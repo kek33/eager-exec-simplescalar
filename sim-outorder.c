@@ -2208,6 +2208,7 @@ ruu_commit(void)
               if (!LSQ[LSQ_head].squashed) {
                   panic("ruu and lsq squashing out of sync");
               }
+              LSQ[LSQ_head].tag++;
                   sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
          	  /* indicate to pipeline trace that this instruction retired */
         	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
@@ -2216,6 +2217,7 @@ ruu_commit(void)
         	  LSQ_head = (LSQ_head + 1) % LSQ_size;
         	  LSQ_num--;
           }
+          RUU[RUU_head].tag++;
           sim_slip += (sim_cycle - RUU[RUU_head].slip);
           ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
           ptrace_endinst(RUU[RUU_head].ptrace_seq);
@@ -2714,18 +2716,11 @@ ruu_issue(void)
     {
       next_node = node->next;
 
-      /* still valid? */
-      if (RSLINK_VALID(node))
-	{
-	  struct RUU_station *rs = RSLINK_RS(node);
+      struct RUU_station *rs = RSLINK_RS(node);
 
-    if (rs->squashed) {
-      fprintf(stderr, "In spec mode: %d\n", rs->spec_mode);
-      fprintf(stderr, "Spec level: %d\n", rs->spec_level);
-      fprintf(stderr, "RS tag: %d\n", rs->tag);
-      fprintf(stderr, "Node tag: %d\n", node->tag);
-      panic("link should not be valid if insn is squashed");
-    }
+      /* still valid? */
+      if (RSLINK_VALID(node) && !rs->squashed)
+	{
 
 	  /* issue operation, both reg and mem deps have been satisfied */
 	  if (!OPERANDS_READY(rs) || !rs->queued
