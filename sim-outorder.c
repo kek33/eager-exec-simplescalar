@@ -2249,6 +2249,8 @@ ruu_commit(void)
         thread_states[rs->thread_id].in_use = FALSE;
       }
 
+      fprintf(stderr, "Committing valid insn for thread: %d\n", rs->thread_id);
+
       /* default commit events */
       events = 0;
 
@@ -4553,7 +4555,6 @@ ruu_fetch(void)
         while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
           if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
             has_found_new_thread = TRUE;
-            fprintf(stderr, "Switching to thread: %d\n", current_fetching_thread);
           } else {
             current_fetching_thread++;
           }
@@ -4563,7 +4564,6 @@ ruu_fetch(void)
           while (has_found_new_thread == FALSE) {
             if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
               has_found_new_thread = TRUE;
-              fprintf(stderr, "Switching to thread: %d\n", current_fetching_thread);
             } else {
               current_fetching_thread++;
             }
