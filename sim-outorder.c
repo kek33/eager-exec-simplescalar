@@ -3214,7 +3214,6 @@ tracer_recover(struct RUU_station *rs_branch)
     }
 
   /* Don't clear the entire fetch queue - just clear the entries associated with this thread */
-  /*
   int fetch_index = fetch_head;
   while (fetch_index != fetch_tail) {
     if (fetch_data[fetch_index].thread_id == rs_branch->thread_id) {
@@ -3230,25 +3229,10 @@ tracer_recover(struct RUU_station *rs_branch)
     if (ptrace_active) {
       ptrace_endinst(fetch_data[fetch_tail].ptrace_seq);
     }
-  }*/
+  }
 
   /* if pipetracing, indicate squash of instructions in the inst fetch queue */
-  if (ptrace_active)
-    {
-      while (fetch_num != 0)
-	{
-	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
-	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
-
-	  /* consume instruction from IFETCH -> DISPATCH queue */
-	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-	  fetch_num--;
-	}
-    }
-
-  /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
+  
   fprintf(stderr, "Recovery from non-fork in thread (%d)\n", rs_branch->thread_id);
   thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
 }
