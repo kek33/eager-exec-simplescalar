@@ -3070,6 +3070,7 @@ struct fetch_rec {
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
   int thread_id; /* thread id of the fetched instruction */
+  int squashed; /* is this instruction squashed? */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -4143,6 +4144,7 @@ ruu_dispatch(void)
     rs->thread_id = curr_thread_id;
     rs->squashed = FALSE;
     rs->fork_counter = thread_states[curr_thread_id].fork_counter;
+    rs->triggers_fork = FALSE;
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4174,6 +4176,7 @@ ruu_dispatch(void)
         lsq->thread_id = curr_thread_id;
         lsq->squashed = FALSE;
         lsq->fork_counter = thread_states[curr_thread_id].fork_counter;
+        lsq->triggers_fork = FALSE;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4587,6 +4590,7 @@ ruu_fetch(void)
       fetch_data[fetch_tail].pred_PC = thread_states[current_fetching_thread].fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].squashed = FALSE;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
