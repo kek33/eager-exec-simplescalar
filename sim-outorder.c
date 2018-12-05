@@ -2517,6 +2517,7 @@ ruu_writeback(void)
         fprintf(stderr, "Writeback for fork produced by thread: %d\n", rs->thread_id);
         if (rs->in_LSQ) panic("load or store should not be triggering fork");
         if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+          fprintf(stderr, "Thread id: %d, fork counter: %d, thread 0 fork counter: %d\n", rs->thread_id, rs->fork_counter, thread_states[0].parent_fork_counters[1]);
           ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
           thread_states[rs->thread_id].keep_fetching = FALSE;
           int test_thread;
