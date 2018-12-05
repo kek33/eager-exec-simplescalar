@@ -2427,6 +2427,9 @@ ruu_commit(void)
        if (RUU[RUU_index].spec_level <= RUU[branch_index].spec_level) {
          panic("Trying to squash instructions that should not be squashed");
        } */
+       if (RUU[RUU_index].spec_mode == FALSE) {
+         panic("Trying to squash correct instructions");
+       }
 
        /* is this operation an effective addr calc for a load or store? */
        if (RUU[RUU_index].ea_comp)
