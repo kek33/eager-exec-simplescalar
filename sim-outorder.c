@@ -2684,8 +2684,8 @@ lsq_refresh(void)
 	    {
         int test_thread;
         for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
-          if (std_unknowns[test_thread][j] == LSQ[index].addr) {
-            std_unknowns[test_thread][j] = 0;
+          if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+            std_unknowns[curr_thread_id][j] = 0;
           }
         }
 
