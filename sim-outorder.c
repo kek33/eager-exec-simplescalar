@@ -2203,7 +2203,7 @@ verify_ruu_entries_squashed(int branch_index, int thread_id, int fork_counter)
 
   while (RUU_index != branch_index) {
     if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] >= fork_counter || RUU[RUU_index].thread_id == thread_id) {
-      if (RUU[RUU_index].squashed == FALSE) panic("This should be cleared");
+      if (RUU[RUU_index].squashed == FALSE) fprintf(stderr, "This should be cleared\n", );
     }
     RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
     continue;
@@ -2502,6 +2502,26 @@ ruu_commit(void)
 
  }
 
+ static void kill_fetch_queue()
+ {
+   if (ptrace_active)
+     {
+       while (fetch_num != 0)
+ 	{
+ 	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
+ 	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
+
+ 	  /* consume instruction from IFETCH -> DISPATCH queue */
+ 	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
+ 	  fetch_num--;
+ 	}
+     }
+
+   /* reset IFETCH state */
+   fetch_num = 0;
+   fetch_tail = fetch_head = 0;
+ }
+
 
 
 /*
@@ -2572,6 +2592,7 @@ ruu_writeback(void)
             }
           }
         }
+        kill_fetch_queue();
       } else if (rs->recover_inst)
 	{
     fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
