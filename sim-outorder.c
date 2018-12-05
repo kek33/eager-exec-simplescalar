@@ -3218,7 +3218,7 @@ tracer_recover(struct RUU_station *rs_branch)
   int visited = 0;
   while (visited != fetch_num) {
     if (fetch_data[fetch_index].thread_id == rs_branch->thread_id) {
-      fetch_data[fetch_index].squashed == TRUE;
+      fetch_data[fetch_index].squashed = TRUE;
       if (ptrace_active) {
         ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
       }
