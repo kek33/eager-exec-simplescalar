@@ -2454,7 +2454,7 @@ ruu_commit(void)
        if (RUU[RUU_index].spec_mode == FALSE) {
          fprintf(stderr, "Bad: triggers fork (%d)\n", RUU[branch_index].triggers_fork);
          //panic("Trying to squash correct instructions. Incorrectly squashed thread (%d) has fork counter (%d) and is squashed by thread (%d) with counter (%d)",
-          RUU[RUU_index].thread_id, thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id], thread_id, fork_counter);
+          //RUU[RUU_index].thread_id, thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id], thread_id, fork_counter);
        }
 
        /* is this operation an effective addr calc for a load or store? */
