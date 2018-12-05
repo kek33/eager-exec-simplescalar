@@ -2238,6 +2238,11 @@ ruu_commit(void)
 	  break;
 	}
 
+      // The forked thread off this is the correct one, so this can retire now
+      if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+        thread_states[rs->thread_id].in_use = FALSE;
+      }
+
       /* default commit events */
       events = 0;
 
@@ -2373,7 +2378,7 @@ ruu_commit(void)
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
  static void
- ruu_recover(int branch_index, int thread_id)			/* index of mis-pred branch */
+ ruu_recover(int branch_index, int thread_id, int fork_counter)			/* index of mis-pred branch */
  {
    int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
    int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
@@ -2389,6 +2394,15 @@ ruu_commit(void)
    /* traverse to older insts until the mispredicted branch is encountered */
    while (RUU_index != branch_index)
      {
+       /* If this instruction does not need to be squashed */
+       if (RUU[RUU_index].parent_fork_counters[thread_id] < fork_counter && RUU[RUU_index] != thread_id) {
+         if (RUU[RUU_index].ea_comp) {
+           /* go to next earlier LSQ slot */
+        	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+         }
+         /* go to next earlier slot in the RUU */
+         RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+       }
        /* the RUU should not drain since the mispredicted branch will remain */
        if (!RUU_num)
  	panic("empty RUU");
@@ -2488,7 +2502,7 @@ ruu_writeback(void)
 	    panic("mis-predicted load or store?!?!?");
 
 	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU, rs->thread_id);
+	  ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
 	  tracer_recover(rs);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
