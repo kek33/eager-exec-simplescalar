@@ -4408,6 +4408,7 @@ ruu_dispatch(void)
         memcpy(&spec_regs_C[curr_thread_id][spec_level], &spec_regs_C[curr_thread_id][spec_level-1], sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
+        fprintf(stderr, "triggering recover insn\n");
 	    }
   }
 
