@@ -2615,16 +2615,30 @@ ruu_writeback(void)
 static void
 lsq_refresh(void)
 {
-  int i, j, index, n_std_unknowns;
-  md_addr_t std_unknowns[MAX_STD_UNKNOWNS];
+  int i, j, index;
+  md_addr_t std_unknowns[max_threads][MAX_STD_UNKNOWNS];
+  int n_std_unknowns[max_threads];
+  for (i=0; i < max_threads; i++) {
+    n_std_unknowns[i] = 0;
+  }
+  int still_valid[max_threads];
+  for (i=0 ; i < max_threads; i++) {
+      still_valid[i] = TRUE;
+  }
 
   /* scan entire queue for ready loads: scan from oldest instruction
      (head) until we reach the tail or an unresolved store, after which no
      other instruction will become ready */
-  for (i=0, index=LSQ_head, n_std_unknowns=0;
+  for (i=0, index=LSQ_head;
        i < LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
+      /* no deps should be created from a squashed insn */
+      if (LSQ[index].squashed) {
+        continue;
+      }
+      int curr_thread_id = LSQ[index].thread_id;
+      int curr_fork_counter = LSQ[index].fork_counter;
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
@@ -2632,9 +2646,18 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
+        int test_thread;
+        still_valid[curr_thread_id] = FALSE;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              still_valid[test_thread] = FALSE;
+            }
+        }
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
 	      /* sta unknown, blocks all later loads, stop search */
-	      break;
+	      //break;
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
@@ -2642,18 +2665,40 @@ lsq_refresh(void)
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
 		 very small */
-	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
-		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
-	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
+
+        int test_thread;
+        std_unknowns[curr_thread_id][n_std_unknowns[curr_thread_id]++] = LSQ[index].addr;
+        // Also must check all of the children of this branch, assuming they are upstream from this
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              if (n_std_unknowns[test_thread] == MAX_STD_UNKNOWNS)
+      		      fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
+              std_unknowns[test_thread][n_std_unknowns[test_thread]++] = LSQ[index].addr;
+            }
+        }
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
-	      /* a later STD known hides an earlier STD unknown */
-	      for (j=0; j<n_std_unknowns; j++)
-		{
-		  if (std_unknowns[j] == /* STA/STD known */LSQ[index].addr)
-		    std_unknowns[j] = /* bogus addr */0;
-		}
+        int test_thread;
+        for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+          if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+            std_unknowns[test_thread][j] = 0;
+          }
+        }
+
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+            for (j=0; j < n_std_unknowns[test_thread]; j++) {
+              if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+                std_unknowns[test_thread][j] = 0;
+              }
+            }
+          }
+        }
 	    }
 	}
 
@@ -2664,19 +2709,14 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
-	  /* no STA unknown conflict (because we got to this check), check for
-	     a STD unknown conflict */
-	  for (j=0; j<n_std_unknowns; j++)
-	    {
-	      /* found a relevant STD unknown? */
-	      if (std_unknowns[j] == LSQ[index].addr)
-		break;
-	    }
-	  if (j == n_std_unknowns)
-	    {
-	      /* no STA or STD unknown conflicts, put load on ready queue */
-	      readyq_enqueue(&LSQ[index]);
-	    }
+    for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+      if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+        break;
+      }
+    }
+    if (j == n_std_unknowns[curr_thread_id]) {
+      readyq_enqueue(&LSQ[index]);
+    }
 	}
     }
 }
