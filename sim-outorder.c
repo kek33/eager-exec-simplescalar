@@ -3249,7 +3249,7 @@ tracer_recover(struct RUU_station *rs_branch)
   /* reset IFETCH state */
   fetch_num = 0;
   fetch_tail = fetch_head = 0;
-
+  fprintf(stderr, "Recovery from non-fork in thread (%d)\n", rs_branch->thread_id);
   thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
 }
 
