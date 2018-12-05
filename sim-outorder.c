@@ -2503,7 +2503,7 @@ ruu_commit(void)
  }
 
 
- static void kill_fetch_queue();
+ static void squash_fetchq_invalids(int thread_id, int fork_counter);
 
 
 
@@ -2543,6 +2543,7 @@ ruu_writeback(void)
         if (rs->in_LSQ) panic("load or store should not be triggering fork");
         if (rs->pred_PC != rs->next_PC) {
           ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
+          squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
           thread_states[rs->thread_id].keep_fetching = FALSE;
           fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
           int test_thread;
@@ -2561,6 +2562,7 @@ ruu_writeback(void)
         } else {
           panic("This should not be called at the moment");
           ruu_recover(rs-RUU, rs->fork_id, 0);
+          squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
           thread_states[rs->fork_id].in_use = FALSE;
           for (int n = 0; n < max_threads; n++) {
             thread_states[rs->fork_id].parent_fork_counters[n] = -1;
@@ -2576,7 +2578,6 @@ ruu_writeback(void)
             }
           }
         }
-        kill_fetch_queue();
       } else if (rs->recover_inst)
 	{
     //fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
@@ -3234,24 +3235,22 @@ tracer_recover(struct RUU_station *rs_branch)
 }
 
 static void
-kill_fetch_queue()
+squash_fetchq_invalids(int thread_id, int fork_counter)
 {
-  if (ptrace_active)
-    {
-      while (fetch_num != 0)
- {
-   /* squash the next instruction from the IFETCH -> DISPATCH queue */
-   ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
 
-   /* consume instruction from IFETCH -> DISPATCH queue */
-   fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-   fetch_num--;
- }
+  int fetch_index = fetch_head;
+  int visited = 0;
+  while (visited != fetch_num) {
+    int fetch_thread_id = fetch_data[fetch_index].thread_id;
+    if (fetch_thread_id == thread_id || thread_states[fetch_thread_id].parent_fork_counters[thread_id] >= fork_counter) {
+      fetch_data[fetch_index].squashed = TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
     }
-
-  /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+    visited++;
+  }
 }
 
 /* initialize the speculative instruction state generator state */
