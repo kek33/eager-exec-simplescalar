@@ -2532,6 +2532,7 @@ ruu_writeback(void)
           }
           // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
         } else {
+          fprintf(stderr, "Thread id: %d, fork counter: %d, thread 0 fork counter: %d\n", rs->thread_id, rs->fork_counter, thread_states[0].parent_fork_counters[1]);
           ruu_recover(rs-RUU, rs->fork_id, 0);
           thread_states[rs->fork_id].in_use = FALSE;
           for (int n = 0; n < max_threads; n++) {
