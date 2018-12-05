@@ -2242,7 +2242,7 @@ ruu_commit(void)
       }
       if (rs->spec_mode) {
         fprintf(stderr, "Speculative insn committing on thread: %d\n", rs->thread_id);
-        panic("speculative insns should not be committing")
+        panic("speculative insns should not be committing");
       };
 
       // The forked thread off this is the correct one, so this can retire now
