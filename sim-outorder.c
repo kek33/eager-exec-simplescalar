@@ -2423,10 +2423,10 @@ ruu_commit(void)
        /* should meet up with the tail first */
        if (RUU_index == RUU_head)
  	panic("RUU head and tail broken");
-
+       /*
        if (RUU[RUU_index].spec_level <= RUU[branch_index].spec_level) {
          panic("Trying to squash instructions that should not be squashed");
-       }
+       } */
 
        /* is this operation an effective addr calc for a load or store? */
        if (RUU[RUU_index].ea_comp)
