@@ -2232,6 +2232,10 @@ ruu_commit(void)
           continue;
       }
 
+      if (rs->triggers_fork) {
+        fprintf(stderr, "Something triggering a fork lives here...\n");
+      }
+
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
@@ -2240,6 +2244,7 @@ ruu_commit(void)
 
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+        fprintf(stderr, "But this needs to get triggered\n", );
         thread_states[rs->thread_id].in_use = FALSE;
       }
 
