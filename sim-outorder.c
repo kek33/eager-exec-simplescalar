@@ -2273,7 +2273,7 @@ ruu_commit(void)
 
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
-        fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
+        //fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
         //thread_states[rs->thread_id].in_use = FALSE;
         verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
       }
@@ -2545,12 +2545,12 @@ ruu_writeback(void)
           ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
           squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
           thread_states[rs->thread_id].keep_fetching = FALSE;
-          fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
+          //fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
           int test_thread;
           for (test_thread = 0; test_thread < max_threads; test_thread++) {
             // really might need another check here
             if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
-              fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
+              //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
               // Free these threads and reset their parent fork pointers
               thread_states[test_thread].in_use = FALSE;
               for (int n = 0; n < max_threads; n++) {
@@ -3990,11 +3990,12 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   thread_states[fork_thread_candidate].keep_fetching = TRUE;
 
   // TODO: fix for later implementation
+  /*
   fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
           rs_branch->spec_level,
           rs_branch->spec_mode,
           fork_thread_candidate,
-          forking_thread);
+          forking_thread);*/
   if (rs_branch->spec_mode) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
@@ -4180,7 +4181,7 @@ ruu_dispatch(void)
 	      sim_num_insn, fault, curr_thread_id, regs.regs_PC);
 
         if (sim_num_insn == 384) {
-          fatal("Breaking for testing purposed");
+          //fatal("Breaking for testing purposed");
         }
 
       /* update memory access stats */
@@ -4230,7 +4231,7 @@ ruu_dispatch(void)
 	  fetch_redirected = TRUE;
 	}
       if (!spec_mode) {
-        fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
+        //fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
       }
 
       /* is this a NOP */
