@@ -2275,6 +2275,9 @@ ruu_commit(void)
       if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
         //fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
         thread_states[rs->thread_id].in_use = FALSE;
+        for (int n=0; n<max_threads; n++) {
+          thread_states[max_threads].parent_fork_counters[rs->thread_id] = -1;
+        }
         verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
       }
 
