@@ -2439,7 +2439,7 @@ ruu_commit(void)
          RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
          continue;
        }
-       fprintf(stderr, "squashing insns for thread: %d\n", RUU[RUU_index].thread_id);
+       //fprintf(stderr, "squashing insns for thread: %d\n", RUU[RUU_index].thread_id);
        /* the RUU should not drain since the mispredicted branch will remain */
        if (!RUU_num)
  	panic("empty RUU");
