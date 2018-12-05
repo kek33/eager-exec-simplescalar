@@ -2402,6 +2402,7 @@ ruu_commit(void)
          }
          /* go to next earlier slot in the RUU */
          RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+         continue;
        }
        /* the RUU should not drain since the mispredicted branch will remain */
        if (!RUU_num)
@@ -2495,8 +2496,40 @@ ruu_writeback(void)
       /* operation has completed */
       rs->completed = TRUE;
 
-      /* does this operation reveal a mis-predicted branch? */
-      if (rs->recover_inst)
+      if (rs->triggers_fork) {
+        if (rs->in_LSQ) panic("load or store should not be triggering fork");
+        if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
+          ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
+          thread_states[rs->thread_id].keep_fetching = FALSE;
+          int test_thread;
+          for (test_thread = 0; test_thread < max_threads; test_thread++) {
+            if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+              // Free these threads and reset their parent fork pointers
+              thread_states[test_thread].in_use = FALSE;
+              for (int n = 0; n < max_threads; n++) {
+                thread_states[test_thread].parent_fork_counters[n] = -1;
+              }
+            }
+          }
+          // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+        } else {
+          ruu_recover(rs-RUU, rs->fork_id, 0);
+          thread_states[rs->fork_id].in_use = FALSE;
+          for (int n = 0; n < max_threads; n++) {
+            thread_states[rs->fork_id].parent_fork_counters[n] = -1;
+          }
+          int test_thread;
+          for (test_thread = 0; test_thread < max_threads; test_thread++) {
+            if (thread_states[test_thread].parent_fork_counters[rs->fork_id] >= rs->fork_counter) {
+              // Free these threads and reset their parent fork pointers
+              thread_states[test_thread].in_use = FALSE;
+              for (int n = 0; n < max_threads; n++) {
+                thread_states[test_thread].parent_fork_counters[n] = -1;
+              }
+            }
+          }
+        }
+      } else if (rs->recover_inst)
 	{
 	  if (rs->in_LSQ)
 	    panic("mis-predicted load or store?!?!?");
@@ -4368,6 +4401,16 @@ ruu_dispatch(void)
 	    }
   }
 
+      /* Now fork if possible */
+
+      if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected) {
+        int successful_fork = try_to_fork(regs.regs_NPC, rs);
+        if (successful_fork) {
+         thread_states[curr_thread_id].fork_counter++;
+         rs->fork_counter = thread_states[curr_thread_id].fork_counter;
+        }
+      }
+
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
 		      (pred_PC[curr_thread_id] != regs.regs_NPC) ? PEV_MPOCCURED : 0);
@@ -4496,7 +4539,7 @@ ruu_fetch(void)
        i++)
     {
       // If we've reached our quota of fetches for this thread, find the next thread to run
-      if (fetches_left_for_thread == 0) {
+      if (fetches_left_for_thread == 0 || thread_states[current_fetching_thread].in_use == FALSE || thread_states[current_fetching_thread].keep_fetching == FALSE) {
         int has_found_new_thread = FALSE;
         current_fetching_thread++;
         while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
