@@ -2261,10 +2261,10 @@ ruu_commit(void)
 	  break;
 	}
       if (rs->thread_id == 1) {
-        fprintf(stderr, "Thread 1 committing\n");
+        //fprintf(stderr, "Thread 1 committing\n");
       }
       if (rs->triggers_fork) {
-        fprintf(stderr, "Something triggering a fork lives here...\n");
+        //fprintf(stderr, "Something triggering a fork lives here...\n");
       }
       if (rs->spec_mode) {
         fprintf(stderr, "Speculative insn committing on thread: %d\n", rs->thread_id);
@@ -2537,7 +2537,7 @@ ruu_writeback(void)
 
       /* operation has completed */
       rs->completed = TRUE;
-      if (rs->thread_id == 1) fprintf(stderr, "Thread 1 completing\n");
+      //if (rs->thread_id == 1) fprintf(stderr, "Thread 1 completing\n");
 
       if (rs->triggers_fork) {
         fprintf(stderr, "Is this at least getting hit?\n");
@@ -2578,7 +2578,7 @@ ruu_writeback(void)
         kill_fetch_queue();
       } else if (rs->recover_inst)
 	{
-    fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
+    //fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
 	  if (rs->in_LSQ)
 	    panic("mis-predicted load or store?!?!?");
 
@@ -4452,7 +4452,7 @@ ruu_dispatch(void)
         memcpy(&spec_regs_C[curr_thread_id][spec_level], &regs.regs_C, sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
-        fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
+        //fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
 	    }
 	} else {
     /* is the trace generator trasitioning into mis-speculation mode? */
@@ -4470,7 +4470,7 @@ ruu_dispatch(void)
         memcpy(&spec_regs_C[curr_thread_id][spec_level], &spec_regs_C[curr_thread_id][spec_level-1], sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
-        fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
+        //fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
 	    }
   }
 
@@ -4481,7 +4481,7 @@ ruu_dispatch(void)
         if (successful_fork) {
          thread_states[curr_thread_id].fork_counter++;
          rs->fork_counter = thread_states[curr_thread_id].fork_counter;
-         fprintf(stderr, "Does this trigger fork: %d\n", rs->triggers_fork);
+         //fprintf(stderr, "Does this trigger fork: %d\n", rs->triggers_fork);
         }
       }
 
@@ -4633,8 +4633,8 @@ ruu_fetch(void)
             }
           }
         }
-        fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
-        fprintf(stderr, "current fetching thread: %d\n", current_fetching_thread);
+        //fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
+        //fprintf(stderr, "current fetching thread: %d\n", current_fetching_thread);
       }
 
       /* fetch an instruction at the next predicted fetch address */
