@@ -3960,7 +3960,7 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   if (thread_states[forking_thread].spec_level > 0) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
-
+    fprintf(stderr, "Fork on already mispredicted path creates thread: %d\n", fork_thread_candidate);
     memcpy(spec_create_vector[fork_thread_candidate][0], spec_create_vector[forking_thread][fork_spec_level],
      MD_TOTAL_REGS * sizeof(struct CV_link));
     memcpy(spec_create_vector_rt[fork_thread_candidate][0],
@@ -3971,6 +3971,7 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   } else {
     thread_states[fork_thread_candidate].spec_mode = FALSE;
     thread_states[fork_thread_candidate].spec_level = -1;
+    fprintf(stderr, "Fork on good path creates thread: %d\n", fork_thread_candidate);
   }
   rs_branch->triggers_fork = TRUE;
   rs_branch->fork_id = fork_thread_candidate;
