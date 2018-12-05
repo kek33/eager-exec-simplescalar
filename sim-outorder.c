@@ -1558,6 +1558,8 @@ struct RUU_station {
   int thread_id; /* thread id of the current insn */
   int squashed; /* is this instruction squashed */
   int fork_counter; /* counter of number of forks this thread has spun off */
+  int triggers_fork; /* does this instruction trigger a fork? */
+  int fork_id; /* what is the id of the forked thread? */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
