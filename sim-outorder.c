@@ -3955,7 +3955,8 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   thread_states[fork_thread_candidate].fetch_regs_PC = fork_pc - sizeof(md_inst_t);
   thread_states[fork_thread_candidate].keep_fetching = TRUE;
 
-  if (thread_states[forking_thread].spec_mode == TRUE) {
+  // TODO: fix for later implementation
+  if (thread_states[forking_thread].spec_level > 0) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
 
