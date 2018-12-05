@@ -2207,6 +2207,7 @@ ruu_commit(void)
       struct RUU_station *rs = &(RUU[RUU_head]);
 
       if (rs->squashed) {
+          fprintf(stderr, "squashed insns showing up in ruu\n");
           if (RUU[RUU_head].ea_comp) {
               if (!LSQ[LSQ_head].squashed) {
                   panic("ruu and lsq squashing out of sync");
