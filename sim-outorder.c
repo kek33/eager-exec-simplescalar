@@ -2497,6 +2497,7 @@ ruu_writeback(void)
       rs->completed = TRUE;
 
       if (rs->triggers_fork) {
+        fprintf(stderr, "Is this at least getting hit?\n");
         if (rs->in_LSQ) panic("load or store should not be triggering fork");
         if (rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
           ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
@@ -4408,6 +4409,7 @@ ruu_dispatch(void)
         if (successful_fork) {
          thread_states[curr_thread_id].fork_counter++;
          rs->fork_counter = thread_states[curr_thread_id].fork_counter;
+         fprintf(stderr, "Does this trigger fork: %d\n", rs->triggers_fork);
         }
       }
 
