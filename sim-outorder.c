@@ -2501,6 +2501,7 @@ ruu_writeback(void)
 
       /* operation has completed */
       rs->completed = TRUE;
+      if (rs->thread_id == 1) fprintf(stderr, "Thread 1 completing\n");
 
       if (rs->triggers_fork) {
         fprintf(stderr, "Is this at least getting hit?\n");
