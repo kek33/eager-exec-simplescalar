@@ -4683,6 +4683,7 @@ ruu_fetch(void)
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
       fetch_data[fetch_tail].squashed = FALSE;
+      fetch_data[fetch_tail].thread_id = current_fetching_thread;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
