@@ -4191,10 +4191,10 @@ ruu_dispatch(void)
           fprintf(stderr, "\n");
           /* fflush(stderr); */
         }
-
+        /*
       if (fault != md_fault_none)
 	fatal("non-speculative fault (%d) detected @ 0x%08p",
-	      fault, regs.regs_PC);
+	      fault, regs.regs_PC);*/
 
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
