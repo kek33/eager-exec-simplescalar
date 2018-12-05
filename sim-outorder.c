@@ -2237,6 +2237,9 @@ ruu_commit(void)
 	  /* at least RUU entry must be complete */
 	  break;
 	}
+      if (rs->thread_id == 1) {
+        fprintf(stderr, "Thread 1 committing\n");
+      }
       if (rs->triggers_fork) {
         fprintf(stderr, "Something triggering a fork lives here...\n");
       }
