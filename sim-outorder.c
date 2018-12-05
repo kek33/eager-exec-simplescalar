@@ -4472,7 +4472,7 @@ ruu_dispatch(void)
 
       /* Now fork if possible */
       /* Just fork when not in spec mode */
-      if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected && !rs->spec_mode) {
+      if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected) {
         int successful_fork = try_to_fork(regs.regs_NPC, rs);
         if (successful_fork) {
          thread_states[curr_thread_id].fork_counter++;
