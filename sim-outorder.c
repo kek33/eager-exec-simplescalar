@@ -94,7 +94,9 @@ struct thread_state {
     int keep_fetching; /* should we keep fetching from this thread */
 };
 static struct thread_state *thread_states;
-
+static counter_t sim_num_forks = 0;
+static counter_t sim_num_nonspec_forks = 0;
+static counter_t sim_num_spec_forks = 0;
 
 /*
  * This file implements a very detailed out-of-order issue superscalar
@@ -1229,6 +1231,15 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
   stat_reg_counter(sdb, "sim_num_loads",
 		   "total number of loads committed",
 		   &sim_num_loads, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_forks",
+ 		   "total number of forks created",
+ 		   &sim_num_forks, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_nonspec_forks",
+  		   "total number of non speculative forks created",
+  		   &sim_num_nonspec_forks, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_spec_forks",
+  		   "total number of forks created",
+  		   &sim_num_spec_forks, 0, NULL);
   stat_reg_formula(sdb, "sim_num_stores",
 		   "total number of stores committed",
 		   "sim_num_refs - sim_num_loads", NULL);
@@ -3983,6 +3994,9 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   if (has_found_fork_candidate == FALSE) {
     return FALSE;
   }
+
+  sim_num_forks++;
+
  // OHHH! There's an issue here
   thread_states[fork_thread_candidate].in_use = TRUE;
   thread_states[fork_thread_candidate].fork_counter = 0;
@@ -4011,9 +4025,11 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
     memcpy(&spec_regs_R[fork_thread_candidate][0], &spec_regs_R[forking_thread][fork_spec_level], sizeof(md_gpr_t));
     memcpy(&spec_regs_F[fork_thread_candidate][0], &spec_regs_F[forking_thread][fork_spec_level], sizeof(md_fpr_t));
     memcpy(&spec_regs_C[fork_thread_candidate][0], &spec_regs_C[forking_thread][fork_spec_level], sizeof(md_ctrl_t));
+    sim_num_spec_forks++;
   } else {
     thread_states[fork_thread_candidate].spec_mode = FALSE;
     thread_states[fork_thread_candidate].spec_level = -1;
+    sim_num_nonspec_forks++;
   }
   rs_branch->triggers_fork = TRUE;
   rs_branch->fork_id = fork_thread_candidate;
