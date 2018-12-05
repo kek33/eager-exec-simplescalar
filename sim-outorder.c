@@ -2502,25 +2502,8 @@ ruu_commit(void)
 
  }
 
- static void kill_fetch_queue()
- {
-   if (ptrace_active)
-     {
-       while (fetch_num != 0)
- 	{
- 	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
- 	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
 
- 	  /* consume instruction from IFETCH -> DISPATCH queue */
- 	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
- 	  fetch_num--;
- 	}
-     }
-
-   /* reset IFETCH state */
-   fetch_num = 0;
-   fetch_tail = fetch_head = 0;
- }
+ static void kill_fetch_queue();
 
 
 
@@ -3267,6 +3250,27 @@ tracer_recover(struct RUU_station *rs_branch)
   fetch_tail = fetch_head = 0;
 
   thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
+}
+
+static void
+kill_fetch_queue()
+{
+  if (ptrace_active)
+    {
+      while (fetch_num != 0)
+ {
+   /* squash the next instruction from the IFETCH -> DISPATCH queue */
+   ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
+
+   /* consume instruction from IFETCH -> DISPATCH queue */
+   fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
+   fetch_num--;
+ }
+    }
+
+  /* reset IFETCH state */
+  fetch_num = 0;
+  fetch_tail = fetch_head = 0;
 }
 
 /* initialize the speculative instruction state generator state */
