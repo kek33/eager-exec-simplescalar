@@ -3973,8 +3973,8 @@ static struct RS_link last_op = RSLINK_NULL_DATA;
 static int
 try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   int forking_thread = rs_branch->thread_id;
-  int forking_thread_counter = thread_states[forking_thread].fork_counter;
-  int fork_spec_level = thread_states[forking_thread].spec_level - 1;
+  int forking_thread_counter = rs_branch->fork_counter;
+  int fork_spec_level = rs_branch->spec_level;
 
   int fork_thread_candidate = forking_thread + 1;
   int has_found_fork_candidate = FALSE;
@@ -4012,11 +4012,11 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
 
   // TODO: fix for later implementation
   fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
-          thread_states[forking_thread].spec_level,
-          thread_states[forking_thread].spec_mode,
+          rs_branch->spec_level,
+          rs_branch->spec_mode,
           fork_thread_candidate,
           forking_thread);
-  if (thread_states[forking_thread].spec_level > 0) {
+  if (rs_branch->spec_mode) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
     memcpy(spec_create_vector[fork_thread_candidate][0], spec_create_vector[forking_thread][fork_spec_level],
