@@ -4200,6 +4200,10 @@ ruu_dispatch(void)
 	fatal("Num insn (%d) non-speculative fault (%d) for thread (%d) detected @ 0x%08p",
 	      sim_num_insn, fault, curr_thread_id, regs.regs_PC);
 
+        if (sim_num_insn == 384) {
+          fatal("Breaking for testing purposed");
+        }
+
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
 	{
