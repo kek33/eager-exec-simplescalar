@@ -2203,7 +2203,7 @@ verify_ruu_entries_squashed(int branch_index, int thread_id, int fork_counter)
 
   while (RUU_index != branch_index) {
     if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] >= fork_counter || RUU[RUU_index].thread_id == thread_id) {
-      if (RUU[RUU_index].squashed == FALSE) fprintf(stderr, "This should be cleared\n", );
+      if (RUU[RUU_index].squashed == FALSE) panic("This should be cleared\n");
     }
     RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
     continue;
