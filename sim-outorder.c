@@ -2187,6 +2187,29 @@ cv_dump(FILE *stream)				/* output stream */
     }
 }
 
+static void
+verify_ruu_entries_squashed(int branch_index, int thread_id, int fork_counter)
+{
+  int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
+  int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+
+  /* recover from the tail of the RUU towards the head until the branch index
+     is reached, this direction ensures that the LSQ can be synchronized with
+     the RUU */
+
+  /* go to first element to squash */
+  RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+
+  while (RUU_index != branch_index) {
+    if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] >= fork_counter || RUU[RUU_index].thread_id == thread_id) {
+      if (RUU[RUU_index].squashed == FALSE) panic("This should be cleared");
+    }
+    RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+    continue;
+  }
+}
+
 
 /*
  *  RUU_COMMIT() - instruction retirement pipeline stage
@@ -2252,6 +2275,7 @@ ruu_commit(void)
       if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
         fprintf(stderr, "But this needs to get triggered\n");
         thread_states[rs->thread_id].in_use = FALSE;
+        verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
       }
 
       /* default commit events */
