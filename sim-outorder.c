@@ -4197,8 +4197,8 @@ ruu_dispatch(void)
         }
 
       if (fault != md_fault_none)
-	fatal("non-speculative fault (%d) for thread (%d) detected @ 0x%08p",
-	      fault, curr_thread_id, regs.regs_PC);
+	fatal("Num insn (%d) non-speculative fault (%d) for thread (%d) detected @ 0x%08p",
+	      sim_num_insn, fault, curr_thread_id, regs.regs_PC);
 
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
@@ -4246,6 +4246,9 @@ ruu_dispatch(void)
 
 	  fetch_redirected = TRUE;
 	}
+      if (!spec_mode) {
+        fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
+      }
 
       /* is this a NOP */
       if (op != MD_NOP_OP)
