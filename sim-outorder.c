@@ -4390,6 +4390,7 @@ ruu_dispatch(void)
         memcpy(&spec_regs_C[curr_thread_id][spec_level], &regs.regs_C, sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
+        fprintf(stderr, "triggering recover insn\n");
 	    }
 	} else {
     /* is the trace generator trasitioning into mis-speculation mode? */
