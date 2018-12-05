@@ -2468,6 +2468,9 @@ ruu_writeback(void)
   /* service all completed events */
   while ((rs = eventq_next_event()))
     {
+      if (rs->squashed) {
+        continue;
+      }
       /* RS has completed execution and (possibly) produced a result */
       if (!OPERANDS_READY(rs) || rs->queued || !rs->issued || rs->completed)
 	panic("inst completed and !ready, !issued, or completed");
