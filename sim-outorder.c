@@ -3980,11 +3980,11 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   if (has_found_fork_candidate == FALSE) {
     return FALSE;
   }
-
+ // OHHH! There's an issue here
   thread_states[fork_thread_candidate].in_use = TRUE;
   thread_states[fork_thread_candidate].fork_counter = 0;
   for (int i=0; i < max_threads; i++) {
-    thread_states[fork_thread_candidate].parent_fork_counters[i] = -1;
+    thread_states[fork_thread_candidate].parent_fork_counters[i] = thread_states[rs_branch->thread_id].parent_fork_counters[i];
   }
   thread_states[fork_thread_candidate].parent_fork_counters[forking_thread] = forking_thread_counter;
   thread_states[fork_thread_candidate].fetch_pred_PC = fork_pc;
