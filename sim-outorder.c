@@ -2232,15 +2232,14 @@ ruu_commit(void)
           continue;
       }
 
-      if (rs->triggers_fork) {
-        fprintf(stderr, "Something triggering a fork lives here...\n");
-      }
-
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
 	  break;
 	}
+      if (rs->triggers_fork) {
+        fprintf(stderr, "Something triggering a fork lives here...\n");
+      }
       if (rs->spec_mode) panic("speculative insns should not be committing");
 
       // The forked thread off this is the correct one, so this can retire now
@@ -2540,6 +2539,7 @@ ruu_writeback(void)
         }
       } else if (rs->recover_inst)
 	{
+    fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
 	  if (rs->in_LSQ)
 	    panic("mis-predicted load or store?!?!?");
 
