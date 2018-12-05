@@ -2395,7 +2395,7 @@ ruu_commit(void)
    while (RUU_index != branch_index)
      {
        /* If this instruction does not need to be squashed */
-       if (RUU[RUU_index].parent_fork_counters[thread_id] < fork_counter && RUU[RUU_index] != thread_id) {
+       if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] < fork_counter && RUU[RUU_index].thread_id != thread_id) {
          if (RUU[RUU_index].ea_comp) {
            /* go to next earlier LSQ slot */
         	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
