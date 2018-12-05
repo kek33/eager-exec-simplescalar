@@ -2240,7 +2240,10 @@ ruu_commit(void)
       if (rs->triggers_fork) {
         fprintf(stderr, "Something triggering a fork lives here...\n");
       }
-      if (rs->spec_mode) panic("speculative insns should not be committing");
+      if (rs->spec_mode) {
+        fprintf(stderr, "Speculative insn committing on thread: %d\n", rs->thread_id);
+        panic("speculative insns should not be committing")
+      };
 
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && rs->next_PC != (rs->PC + sizeof(md_inst_t))) {
