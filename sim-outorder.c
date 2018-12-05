@@ -4647,8 +4647,9 @@ ruu_fetch(void)
         }
         //fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
         //fprintf(stderr, "current fetching thread: %d\n", current_fetching_thread);
+        fetches_left_for_thread = max_fetches_before_switch;
       }
-      fetches_left_for_thread = max_fetches_before_switch;
+      fetches_left_for_thread--;
 
       /* fetch an instruction at the next predicted fetch address */
       thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
