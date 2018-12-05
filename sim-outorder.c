@@ -4571,6 +4571,7 @@ ruu_fetch(void)
             }
           }
         }
+        fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
       }
 
       /* fetch an instruction at the next predicted fetch address */
