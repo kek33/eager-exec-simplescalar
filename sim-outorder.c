@@ -4267,7 +4267,7 @@ ruu_dispatch(void)
 	  fetch_redirected = TRUE;
 	}
       if (!spec_mode) {
-        fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
+        //fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
       }
 
       /* is this a NOP */
