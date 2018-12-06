@@ -2287,7 +2287,7 @@ ruu_commit(void)
         //fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
         thread_states[rs->thread_id].in_use = FALSE;
         for (int n=0; n<max_threads; n++) {
-          thread_states[max_threads].parent_fork_counters[rs->thread_id] = -1;
+          thread_states[n].parent_fork_counters[rs->thread_id] = -1;
         }
         verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
       }
@@ -2565,7 +2565,7 @@ ruu_writeback(void)
           int test_thread;
           for (test_thread = 0; test_thread < max_threads; test_thread++) {
             // really might need another check here
-            if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+            if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter && test_thread != rs->thread_id) {
               //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
               // Free these threads and reset their parent fork pointers
               thread_states[test_thread].in_use = FALSE;
