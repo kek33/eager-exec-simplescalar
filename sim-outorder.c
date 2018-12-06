@@ -4653,6 +4653,7 @@ ruu_fetch(void)
         if (has_found_new_thread == FALSE) {
           current_fetching_thread = 0;
           while (has_found_new_thread == FALSE) {
+            if (current_fetching_thread == max_threads) panic ("No threads available");
             if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
               has_found_new_thread = TRUE;
             } else {
