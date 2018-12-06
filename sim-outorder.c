@@ -2,20 +2,20 @@
 
 /* SimpleScalar(TM) Tool Suite
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
- * All Rights Reserved. 
- * 
+ * All Rights Reserved.
+ *
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
  * YOU ARE AGREEING TO THESE TERMS AND CONDITIONS.
- * 
+ *
  * No portion of this work may be used by any commercial entity, or for any
  * commercial purpose, without the prior, written permission of SimpleScalar,
  * LLC (info@simplescalar.com). Nonprofit and noncommercial use is permitted
  * as described below.
- * 
+ *
  * 1. SimpleScalar is provided AS IS, with no warranty of any kind, express
  * or implied. The user of the program accepts full responsibility for the
  * application of the program and the use of any results.
- * 
+ *
  * 2. Nonprofit and noncommercial use is encouraged. SimpleScalar may be
  * downloaded, compiled, executed, copied, and modified solely for nonprofit,
  * educational, noncommercial research, and noncommercial scholarship
@@ -24,13 +24,13 @@
  * solely for nonprofit, educational, noncommercial research, and
  * noncommercial scholarship purposes provided that this notice in its
  * entirety accompanies all copies.
- * 
+ *
  * 3. ALL COMMERCIAL USE, AND ALL USE BY FOR PROFIT ENTITIES, IS EXPRESSLY
  * PROHIBITED WITHOUT A LICENSE FROM SIMPLESCALAR, LLC (info@simplescalar.com).
- * 
+ *
  * 4. No nonprofit user may place any restrictions on the use of this software,
  * including as modified by the user, by any other authorized user.
- * 
+ *
  * 5. Noncommercial and nonprofit users may distribute copies of SimpleScalar
  * in compiled or executable form as set forth in Section 2, provided that
  * either: (A) it is accompanied by the corresponding machine-readable source
@@ -40,11 +40,11 @@
  * must permit verbatim duplication by anyone, or (C) it is distributed by
  * someone who received only the executable form, and is accompanied by a
  * copy of the written offer of source code.
- * 
+ *
  * 6. SimpleScalar was developed by Todd M. Austin, Ph.D. The tool suite is
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
- * 
+ *
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
 
@@ -72,6 +72,31 @@
 #include "ptrace.h"
 #include "dlite.h"
 #include "sim.h"
+
+/* Need to define these at compile time
+  sim-outorder has no way of recovering past a single level of misspeculation
+  i.e. if I misspeculate on a branch, I can't misspeculate down the next branch*/
+#define MAX_THREADS 16
+#define MAX_SPEC_LEVELS 128
+static int max_threads; /* maximum threads allowed to run */
+static int fork_penalty; /* penalty given for forking a branch */
+static int max_fetches_before_switch; /* max fetches for given thread before switching */
+int current_fetching_thread = 0;
+int fetches_left_for_thread;
+struct thread_state {
+    md_addr_t fetch_regs_PC;
+    md_addr_t fetch_pred_PC;
+    int spec_mode;
+    int spec_level;
+    int fork_counter; /* current fork counter of this thread */
+    int parent_fork_counters[MAX_THREADS]; /* Shows the fork counter of every thread. This is -1 if thread is not parent. */
+    int in_use; /* is this thread currently in use */
+    int keep_fetching; /* should we keep fetching from this thread */
+};
+static struct thread_state *thread_states;
+static counter_t sim_num_forks = 0;
+static counter_t sim_num_nonspec_forks = 0;
+static counter_t sim_num_spec_forks = 0;
 
 /*
  * This file implements a very detailed out-of-order issue superscalar
@@ -351,12 +376,6 @@ static unsigned int inst_seq = 0;
 /* pipetrace instruction sequence counter */
 static unsigned int ptrace_seq = 0;
 
-/* speculation mode, non-zero when mis-speculating, i.e., executing
-   instructions down the wrong path, thus state recovery will eventually have
-   to occur that resets processor register and memory state back to the last
-   precise state */
-static int spec_mode = FALSE;
-
 /* cycles until fetch issue resumes */
 static unsigned ruu_fetch_issue_delay = 0;
 
@@ -573,7 +592,7 @@ dtlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 void
 sim_reg_options(struct opt_odb_t *odb)
 {
-  opt_reg_header(odb, 
+  opt_reg_header(odb,
 "sim-outorder: This simulator implements a very detailed out-of-order issue\n"
 "superscalar processor with a two-level memory system and speculative\n"
 "execution support.  This simulator is a performance simulator, tracking the\n"
@@ -872,6 +891,19 @@ sim_reg_options(struct opt_odb_t *odb)
   opt_reg_flag(odb, "-bugcompat",
 	       "operate in backward-compatible bugs mode (for testing only)",
 	       &bugcompat_mode, /* default */FALSE, /* print */TRUE, NULL);
+
+  opt_reg_int(odb, "-max:threads",
+        "maximum number of threads at any given moment",
+        &max_threads, /* default */1,
+        /* print */TRUE, /* format */NULL);
+   opt_reg_int(odb, "-fork_penalty",
+         "penalty to total cycles for forking a thread",
+         &fork_penalty, /* default */0,
+         /* print */TRUE, /* format */NULL);
+   opt_reg_int(odb, "-max:fetches_before_switch",
+         "maximum number of insns fetched for a single thread before switching",
+         &max_fetches_before_switch, /* default */1,
+         /* print */TRUE, /* format */NULL);
 }
 
 /* check simulator-specific option values */
@@ -1152,25 +1184,25 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (res_ialu > MAX_INSTS_PER_CLASS)
     fatal("number of integer ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IALU_INDEX].quantity = res_ialu;
-  
+
   if (res_imult < 1)
     fatal("number of integer multiplier/dividers must be greater than zero");
   if (res_imult > MAX_INSTS_PER_CLASS)
     fatal("number of integer mult/div's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_IMULT_INDEX].quantity = res_imult;
-  
+
   if (res_memport < 1)
     fatal("number of memory system ports must be greater than zero");
   if (res_memport > MAX_INSTS_PER_CLASS)
     fatal("number of memory system ports must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_MEMPORT_INDEX].quantity = res_memport;
-  
+
   if (res_fpalu < 1)
     fatal("number of floating point ALU's must be greater than zero");
   if (res_fpalu > MAX_INSTS_PER_CLASS)
     fatal("number of floating point ALU's must be <= MAX_INSTS_PER_CLASS");
   fu_config[FU_FPALU_INDEX].quantity = res_fpalu;
-  
+
   if (res_fpmult < 1)
     fatal("number of floating point multiplier/dividers must be > zero");
   if (res_fpmult > MAX_INSTS_PER_CLASS)
@@ -1199,6 +1231,15 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
   stat_reg_counter(sdb, "sim_num_loads",
 		   "total number of loads committed",
 		   &sim_num_loads, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_forks",
+ 		   "total number of forks created",
+ 		   &sim_num_forks, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_nonspec_forks",
+  		   "total number of non speculative forks created",
+  		   &sim_num_nonspec_forks, 0, NULL);
+  stat_reg_counter(sdb, "sim_num_spec_forks",
+  		   "total number of forks created",
+  		   &sim_num_spec_forks, 0, NULL);
   stat_reg_formula(sdb, "sim_num_stores",
 		   "total number of stores committed",
 		   "sim_num_refs - sim_num_loads", NULL);
@@ -1361,6 +1402,7 @@ static void readyq_init(void);
 static void cv_init(void);
 static void tracer_init(void);
 static void fetch_init(void);
+static void thread_states_init(void);
 
 /* initialize the simulator */
 void
@@ -1434,6 +1476,7 @@ sim_load_prog(char *fname,		/* program to load */
   readyq_init();
   ruu_init();
   lsq_init();
+  thread_states_init();
 
   /* initialize the DLite debugger */
   dlite_init(simoo_reg_obj, simoo_mem_obj, simoo_mstate_obj);
@@ -1522,6 +1565,12 @@ struct RUU_station {
      operands are known to be read (see lsq_refresh() for details on
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
+  int spec_level; /* spec level of the current insn */
+  int thread_id; /* thread id of the current insn */
+  int squashed; /* is this instruction squashed */
+  int fork_counter; /* counter of number of forks this thread has spun off */
+  int triggers_fork; /* does this instruction trigger a fork? */
+  int fork_id; /* what is the id of the forked thread? */
 };
 
 /* non-zero if all register operands are ready, update with MAX_IDEPS */
@@ -1546,6 +1595,24 @@ ruu_init(void)
   RUU_head = RUU_tail = 0;
   RUU_count = 0;
   RUU_fcount = 0;
+}
+
+static void
+thread_states_init(void) {
+  thread_states = calloc(max_threads, sizeof(struct thread_state));
+  if (!thread_states)
+    fatal("out of virtual memory");
+  for (int i=0; i < max_threads; i++) {
+    thread_states[i].in_use = FALSE;
+    thread_states[i].spec_mode = FALSE;
+    thread_states[i].spec_level = -1;
+    thread_states[i].fork_counter = 0;
+    thread_states[i].keep_fetching = TRUE;
+    for (int j=0; j < max_threads; j++) {
+      thread_states[i].parent_fork_counters[j] = -1;
+    }
+  }
+  thread_states[0].in_use = TRUE;
 }
 
 /* dump the contents of the RUU */
@@ -2054,27 +2121,27 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
    details on this process */
 static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
 static struct CV_link create_vector[MD_TOTAL_REGS];
-static struct CV_link spec_create_vector[MD_TOTAL_REGS];
+static struct CV_link spec_create_vector[MAX_THREADS][MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* these arrays shadow the create vector an indicate when a register was
    last created */
 static tick_t create_vector_rt[MD_TOTAL_REGS];
-static tick_t spec_create_vector_rt[MD_TOTAL_REGS];
+static tick_t spec_create_vector_rt[MAX_THREADS][MAX_SPEC_LEVELS][MD_TOTAL_REGS];
 
 /* read a create vector entry */
-#define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector[N]                \
+#define CREATE_VECTOR(THREAD, N)        (spec_mode\
+				 ? spec_create_vector[THREAD][spec_level][N]                \
 				 : create_vector[N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector_rt[N]             \
+#define CREATE_VECTOR_RT(THREAD, N)     (spec_mode\
+				 ? spec_create_vector_rt[THREAD][spec_level][N]             \
 				 : create_vector_rt[N])
 
 /* set a create vector entry */
-#define SET_CREATE_VECTOR(N, L) (spec_mode                              \
+#define SET_CREATE_VECTOR(THREAD, N, L) (spec_mode                              \
 				 ? (BITMAP_SET(use_spec_cv, CV_BMAP_SZ, (N)),\
-				    spec_create_vector[N] = (L))        \
+				    spec_create_vector[THREAD][spec_level][N] = (L))        \
 				 : (create_vector[N] = (L)))
 
 /* initialize the create vector */
@@ -2082,16 +2149,24 @@ static void
 cv_init(void)
 {
   int i;
+  int j;
+  int k;
 
   /* initially all registers are valid in the architected register file,
      i.e., the create vector entry is CVLINK_NULL */
-  for (i=0; i < MD_TOTAL_REGS; i++)
-    {
-      create_vector[i] = CVLINK_NULL;
-      create_vector_rt[i] = 0;
-      spec_create_vector[i] = CVLINK_NULL;
-      spec_create_vector_rt[i] = 0;
+  for (i=0; i < MD_TOTAL_REGS; i++) {
+    create_vector[i] = CVLINK_NULL;
+    create_vector_rt[i] = 0;
+  }
+
+  for (i=0; i < MAX_THREADS; i++) {
+    for (j=0; j < MAX_SPEC_LEVELS; j++) {
+      for (k=0; k < MD_TOTAL_REGS; k++) {
+        spec_create_vector[i][j][k] = CVLINK_NULL;
+        spec_create_vector_rt[i][j][k] = 0;
+      }
     }
+  }
 
   /* all create vector entries are non-speculative */
   BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
@@ -2108,10 +2183,12 @@ cv_dump(FILE *stream)				/* output stream */
     stream = stderr;
 
   fprintf(stream, "** create vector state **\n");
+  int spec_mode = thread_states[0].spec_mode;
+  int spec_level = thread_states[0].spec_level;
 
   for (i=0; i < MD_TOTAL_REGS; i++)
     {
-      ent = CREATE_VECTOR(i);
+      ent = CREATE_VECTOR(0, i);
       if (!ent.rs)
 	fprintf(stream, "[cv%02d]: from architected reg file\n", i);
       else
@@ -2119,6 +2196,29 @@ cv_dump(FILE *stream)				/* output stream */
 		i, (ent.rs->in_LSQ ? "LSQ" : "RUU"),
 		(int)(ent.rs - (ent.rs->in_LSQ ? LSQ : RUU)));
     }
+}
+
+static void
+verify_ruu_entries_squashed(int branch_index, int thread_id, int fork_counter)
+{
+  int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
+  int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+
+  /* recover from the tail of the RUU towards the head until the branch index
+     is reached, this direction ensures that the LSQ can be synchronized with
+     the RUU */
+
+  /* go to first element to squash */
+  RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+
+  while (RUU_index != branch_index) {
+    if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] >= fork_counter || RUU[RUU_index].thread_id == thread_id) {
+      if (RUU[RUU_index].squashed == FALSE) panic("This should be cleared\n");
+    }
+    RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+    continue;
+  }
 }
 
 
@@ -2140,11 +2240,57 @@ ruu_commit(void)
     {
       struct RUU_station *rs = &(RUU[RUU_head]);
 
+      if (rs->squashed) {
+          if (RUU[RUU_head].ea_comp) {
+              if (!LSQ[LSQ_head].squashed) {
+                  panic("ruu and lsq squashing out of sync");
+              }
+              LSQ[LSQ_head].tag++;
+                  sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+         	  /* indicate to pipeline trace that this instruction retired */
+        	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
+        	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+         	  /* commit head of LSQ as well */
+        	  LSQ_head = (LSQ_head + 1) % LSQ_size;
+        	  LSQ_num--;
+          }
+          RUU[RUU_head].tag++;
+          sim_slip += (sim_cycle - RUU[RUU_head].slip);
+          ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
+          ptrace_endinst(RUU[RUU_head].ptrace_seq);
+           /* commit head entry of RUU */
+          RUU_head = (RUU_head + 1) % RUU_size;
+          RUU_num--;
+           /* one more instruction committed to architected state */
+          committed++;
+          continue;
+      }
+
       if (!rs->completed)
 	{
 	  /* at least RUU entry must be complete */
 	  break;
 	}
+      if (rs->thread_id == 1) {
+        //fprintf(stderr, "Thread 1 committing\n");
+      }
+      if (rs->triggers_fork) {
+        //fprintf(stderr, "Something triggering a fork lives here...\n");
+      }
+      if (rs->spec_mode) {
+        fprintf(stderr, "Speculative insn committing on thread: %d\n", rs->thread_id);
+        panic("speculative insns should not be committing");
+      };
+
+      // The forked thread off this is the correct one, so this can retire now
+      if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
+        //fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
+        thread_states[rs->thread_id].in_use = FALSE;
+        for (int n=0; n<max_threads; n++) {
+          thread_states[n].parent_fork_counters[rs->thread_id] = -1;
+        }
+        verify_ruu_entries_squashed(rs - RUU, rs->thread_id, rs->fork_counter);
+      }
 
       /* default commit events */
       events = 0;
@@ -2213,7 +2359,7 @@ ruu_commit(void)
 	  /* invalidate load/store operation instance */
 	  LSQ[LSQ_head].tag++;
           sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
-   
+
 	  /* indicate to pipeline trace that this instruction retired */
 	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
 	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
@@ -2280,89 +2426,101 @@ ruu_commit(void)
 
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
-static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
-{
-  int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
-  int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+ static void
+ ruu_recover(int branch_index, int thread_id, int fork_counter)			/* index of mis-pred branch */
+ {
+   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
+   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
 
-  /* recover from the tail of the RUU towards the head until the branch index
-     is reached, this direction ensures that the LSQ can be synchronized with
-     the RUU */
+   /* recover from the tail of the RUU towards the head until the branch index
+      is reached, this direction ensures that the LSQ can be synchronized with
+      the RUU */
 
-  /* go to first element to squash */
-  RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+   /* go to first element to squash */
+   RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+   LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
 
-  /* traverse to older insts until the mispredicted branch is encountered */
-  while (RUU_index != branch_index)
-    {
-      /* the RUU should not drain since the mispredicted branch will remain */
-      if (!RUU_num)
-	panic("empty RUU");
+   /* traverse to older insts until the mispredicted branch is encountered */
+   while (RUU_index != branch_index)
+     {
+       /* If this instruction does not need to be squashed */
+       if (thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id] < fork_counter && RUU[RUU_index].thread_id != thread_id) {
+         if (RUU[RUU_index].ea_comp) {
+           /* go to next earlier LSQ slot */
+        	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+         }
+         /* go to next earlier slot in the RUU */
+         RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+         continue;
+       }
+       //fprintf(stderr, "squashing insns for thread: %d\n", RUU[RUU_index].thread_id);
+       /* the RUU should not drain since the mispredicted branch will remain */
+       if (!RUU_num)
+ 	panic("empty RUU");
 
-      /* should meet up with the tail first */
-      if (RUU_index == RUU_head)
-	panic("RUU head and tail broken");
+       /* should meet up with the tail first */
+       if (RUU_index == RUU_head)
+ 	panic("RUU head and tail broken");
+       /*
+       if (RUU[RUU_index].spec_level <= RUU[branch_index].spec_level) {
+         panic("Trying to squash instructions that should not be squashed");
+       } */
+       if (RUU[RUU_index].spec_mode == FALSE) {
+         fprintf(stderr, "Bad: triggers fork (%d)\n", RUU[branch_index].triggers_fork);
+         panic("Trying to squash correct instructions. Incorrectly squashed thread (%d) has fork counter (%d) and is squashed by thread (%d) with counter (%d)",
+          RUU[RUU_index].thread_id, thread_states[RUU[RUU_index].thread_id].parent_fork_counters[thread_id], thread_id, fork_counter);
+       }
 
-      /* is this operation an effective addr calc for a load or store? */
-      if (RUU[RUU_index].ea_comp)
-	{
-	  /* should be at least one load or store in the LSQ */
-	  if (!LSQ_num)
-	    panic("RUU and LSQ out of sync");
+       /* is this operation an effective addr calc for a load or store? */
+       if (RUU[RUU_index].ea_comp)
+ 	{
+ 	  /* should be at least one load or store in the LSQ */
+ 	  if (!LSQ_num)
+ 	    panic("RUU and LSQ out of sync");
 
-	  /* recover any resources consumed by the load or store operation */
-	  for (i=0; i<MAX_ODEPS; i++)
-	    {
-	      RSLINK_FREE_LIST(LSQ[LSQ_index].odep_list[i]);
-	      /* blow away the consuming op list */
-	      LSQ[LSQ_index].odep_list[i] = NULL;
-	    }
-      
-	  /* squash this LSQ entry */
-	  LSQ[LSQ_index].tag++;
+ 	  /* recover any resources consumed by the load or store operation */
+ 	  for (i=0; i<MAX_ODEPS; i++)
+ 	    {
+ 	      RSLINK_FREE_LIST(LSQ[LSQ_index].odep_list[i]);
+ 	      /* blow away the consuming op list */
+ 	      LSQ[LSQ_index].odep_list[i] = NULL;
+ 	    }
 
-	  /* indicate in pipetrace that this instruction was squashed */
-	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
+ 	  /* squash this LSQ entry */
+ 	  LSQ[LSQ_index].tag++;
+     LSQ[LSQ_index].squashed = TRUE;
 
-	  /* go to next earlier LSQ slot */
-	  LSQ_prev_tail = LSQ_index;
-	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
-	}
+ 	  /* indicate in pipetrace that this instruction was squashed */
+ 	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
 
-      /* recover any resources used by this RUU operation */
-      for (i=0; i<MAX_ODEPS; i++)
-	{
-	  RSLINK_FREE_LIST(RUU[RUU_index].odep_list[i]);
-	  /* blow away the consuming op list */
-	  RUU[RUU_index].odep_list[i] = NULL;
-	}
-      
-      /* squash this RUU entry */
-      RUU[RUU_index].tag++;
+ 	  /* go to next earlier LSQ slot */
+ 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
+ 	}
 
-      /* indicate in pipetrace that this instruction was squashed */
-      ptrace_endinst(RUU[RUU_index].ptrace_seq);
+       /* recover any resources used by this RUU operation */
+       for (i=0; i<MAX_ODEPS; i++)
+ 	{
+ 	  RSLINK_FREE_LIST(RUU[RUU_index].odep_list[i]);
+ 	  /* blow away the consuming op list */
+ 	  RUU[RUU_index].odep_list[i] = NULL;
+ 	}
 
-      /* go to next earlier slot in the RUU */
-      RUU_prev_tail = RUU_index;
-      RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
-    }
+       /* squash this RUU entry */
+       RUU[RUU_index].tag++;
+       RUU[RUU_index].squashed = TRUE;
 
-  /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
+       /* indicate in pipetrace that this instruction was squashed */
+       ptrace_endinst(RUU[RUU_index].ptrace_seq);
 
-  /* revert create vector back to last precise create vector state, NOTE:
-     this is accomplished by resetting all the copied-on-write bits in the
-     USE_SPEC_CV bit vector */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
+       /* go to next earlier slot in the RUU */
+       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
+     }
 
-  /* FIXME: could reset functional units at squash time */
-}
+ }
+
+
+ static void squash_fetchq_invalids(int thread_id, int fork_counter);
+
 
 
 /*
@@ -2370,7 +2528,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
  */
 
 /* forward declarations */
-static void tracer_recover(void);
+static void tracer_recover(struct RUU_station *rs_branch);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2386,23 +2544,82 @@ ruu_writeback(void)
   /* service all completed events */
   while ((rs = eventq_next_event()))
     {
+      if (rs->squashed) {
+        continue;
+      }
       /* RS has completed execution and (possibly) produced a result */
       if (!OPERANDS_READY(rs) || rs->queued || !rs->issued || rs->completed)
 	panic("inst completed and !ready, !issued, or completed");
 
       /* operation has completed */
       rs->completed = TRUE;
+      //if (rs->thread_id == 1) fprintf(stderr, "Thread 1 completing\n");
 
-      /* does this operation reveal a mis-predicted branch? */
-      if (rs->recover_inst)
+      if (rs->triggers_fork) {
+        if (rs->in_LSQ) panic("load or store should not be triggering fork");
+        if (rs->pred_PC != rs->next_PC) {
+          ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
+          squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
+          thread_states[rs->thread_id].keep_fetching = FALSE;
+          //fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
+          int test_thread;
+          for (test_thread = 0; test_thread < max_threads; test_thread++) {
+            // really might need another check here
+            if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter && test_thread != rs->thread_id) {
+              //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
+              // Free these threads and reset their parent fork pointers
+              thread_states[test_thread].in_use = FALSE;
+              for (int n = 0; n < max_threads; n++) {
+                thread_states[test_thread].parent_fork_counters[n] = -1;
+              }
+            }
+          }
+          thread_states[rs->thread_id].in_use = TRUE;
+          // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
+        } else {
+          panic("This should not be called at the moment");
+          ruu_recover(rs-RUU, rs->fork_id, 0);
+          squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
+          thread_states[rs->fork_id].in_use = FALSE;
+          for (int n = 0; n < max_threads; n++) {
+            thread_states[rs->fork_id].parent_fork_counters[n] = -1;
+          }
+          int test_thread;
+          for (test_thread = 0; test_thread < max_threads; test_thread++) {
+            if (thread_states[test_thread].parent_fork_counters[rs->fork_id] >= rs->fork_counter) {
+              // Free these threads and reset their parent fork pointers
+              thread_states[test_thread].in_use = FALSE;
+              for (int n = 0; n < max_threads; n++) {
+                thread_states[test_thread].parent_fork_counters[n] = -1;
+              }
+            }
+          }
+        }
+      } else if (rs->recover_inst)
 	{
+    //fprintf(stderr, "In what world is this ocurring: %d\n", rs->thread_id);
 	  if (rs->in_LSQ)
 	    panic("mis-predicted load or store?!?!?");
 
 	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
-	  tracer_recover();
+
+	  ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
+	  tracer_recover(rs);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
+
+    int test_thread;
+    for (test_thread = 0; test_thread < max_threads; test_thread++) {
+      // really might need another check here
+      if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter && test_thread!=rs->thread_id) {
+        //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
+        // Free these threads and reset their parent fork pointers
+        thread_states[test_thread].in_use = FALSE;
+        for (int n = 0; n < max_threads; n++) {
+          thread_states[test_thread].parent_fork_counters[n] = -1;
+        }
+      }
+    }
+    thread_states[rs->thread_id].keep_fetching = TRUE;
 
 	  /* stall fetch until I-fetch and I-decode recover */
 	  ruu_fetch_issue_delay = ruu_branch_penalty;
@@ -2442,23 +2659,24 @@ ruu_writeback(void)
 	      struct CV_link link;
 	      struct RS_link *olink, *olink_next;
 
-	      if (rs->spec_mode)
-		{
-		  /* update the speculative create vector, future operations
-		     get value from later creator or architected reg file */
-		  link = spec_create_vector[rs->onames[i]];
-		  if (/* !NULL */link.rs
-		      && /* refs RS */(link.rs == rs && link.odep_num == i))
-		    {
-		      /* the result can now be read from a physical register,
-			 indicate this as so */
-		      spec_create_vector[rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[rs->onames[i]] = sim_cycle;
-		    }
-		  /* else, creator invalidated or there is another creator */
-		}
-	      else
-		{
+        /* have to go through every thread's spec create vector looking for a pointer to this ruu ruu_entry
+           and set it to null if it matches */
+        for (int t=0; t <= max_threads; t++) {
+          int curr_thread_max_spec = thread_states[t].spec_level;
+          for (int s=0; s<=curr_thread_max_spec; s++) {
+            link = spec_create_vector[t][s][rs->onames[i]];
+      		  if (/* !NULL */link.rs
+      		      && /* refs RS */(link.rs == rs && link.odep_num == i))
+      		    {
+      		      /* the result can now be read from a physical register,
+      			 indicate this as so */
+      		      spec_create_vector[t][s][rs->onames[i]] = CVLINK_NULL;
+      		      spec_create_vector_rt[t][s][rs->onames[i]] = sim_cycle;
+      		    }
+          }
+        }
+
+		if (rs->spec_mode == FALSE) {
 		  /* update the non-speculative create vector, future
 		     operations get value from later creator or architected
 		     reg file */
@@ -2529,16 +2747,30 @@ ruu_writeback(void)
 static void
 lsq_refresh(void)
 {
-  int i, j, index, n_std_unknowns;
-  md_addr_t std_unknowns[MAX_STD_UNKNOWNS];
+  int i, j, index;
+  md_addr_t std_unknowns[max_threads][MAX_STD_UNKNOWNS];
+  int n_std_unknowns[max_threads];
+  for (i=0; i < max_threads; i++) {
+    n_std_unknowns[i] = 0;
+  }
+  int still_valid[max_threads];
+  for (i=0 ; i < max_threads; i++) {
+      still_valid[i] = TRUE;
+  }
 
   /* scan entire queue for ready loads: scan from oldest instruction
      (head) until we reach the tail or an unresolved store, after which no
      other instruction will become ready */
-  for (i=0, index=LSQ_head, n_std_unknowns=0;
+  for (i=0, index=LSQ_head;
        i < LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
+      /* no deps should be created from a squashed insn */
+      if (LSQ[index].squashed) {
+        continue;
+      }
+      int curr_thread_id = LSQ[index].thread_id;
+      int curr_fork_counter = LSQ[index].fork_counter;
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
@@ -2546,9 +2778,18 @@ lsq_refresh(void)
 	{
 	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
+        int test_thread;
+        still_valid[curr_thread_id] = FALSE;
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              still_valid[test_thread] = FALSE;
+            }
+        }
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
 	      /* sta unknown, blocks all later loads, stop search */
-	      break;
+	      //break;
 	    }
 	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
@@ -2556,18 +2797,40 @@ lsq_refresh(void)
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
 		 very small */
-	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
-		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
-	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
+
+        int test_thread;
+        std_unknowns[curr_thread_id][n_std_unknowns[curr_thread_id]++] = LSQ[index].addr;
+        // Also must check all of the children of this branch, assuming they are upstream from this
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+              if (n_std_unknowns[test_thread] == MAX_STD_UNKNOWNS)
+      		      fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
+              std_unknowns[test_thread][n_std_unknowns[test_thread]++] = LSQ[index].addr;
+            }
+        }
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
-	      /* a later STD known hides an earlier STD unknown */
-	      for (j=0; j<n_std_unknowns; j++)
-		{
-		  if (std_unknowns[j] == /* STA/STD known */LSQ[index].addr)
-		    std_unknowns[j] = /* bogus addr */0;
-		}
+        int test_thread;
+        for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+          if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+            std_unknowns[curr_thread_id][j] = 0;
+          }
+        }
+
+        for (test_thread = 0; test_thread < max_threads; test_thread++) {
+          if (thread_states[test_thread].in_use == TRUE &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] != -1) &&
+            (thread_states[test_thread].parent_fork_counters[curr_thread_id] >= curr_fork_counter)) {
+            for (j=0; j < n_std_unknowns[test_thread]; j++) {
+              if (std_unknowns[test_thread][j] == LSQ[index].addr) {
+                std_unknowns[test_thread][j] = 0;
+              }
+            }
+          }
+        }
 	    }
 	}
 
@@ -2578,19 +2841,14 @@ lsq_refresh(void)
 	  && /* completed? */!LSQ[index].completed
 	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
 	{
-	  /* no STA unknown conflict (because we got to this check), check for
-	     a STD unknown conflict */
-	  for (j=0; j<n_std_unknowns; j++)
-	    {
-	      /* found a relevant STD unknown? */
-	      if (std_unknowns[j] == LSQ[index].addr)
-		break;
-	    }
-	  if (j == n_std_unknowns)
-	    {
-	      /* no STA or STD unknown conflicts, put load on ready queue */
-	      readyq_enqueue(&LSQ[index]);
-	    }
+    for (j=0; j < n_std_unknowns[curr_thread_id]; j++) {
+      if (std_unknowns[curr_thread_id][j] == LSQ[index].addr) {
+        break;
+      }
+    }
+    if (j == n_std_unknowns[curr_thread_id]) {
+      readyq_enqueue(&LSQ[index]);
+    }
 	}
     }
 }
@@ -2633,10 +2891,11 @@ ruu_issue(void)
     {
       next_node = node->next;
 
+      struct RUU_station *rs = RSLINK_RS(node);
+
       /* still valid? */
-      if (RSLINK_VALID(node))
+      if (RSLINK_VALID(node) && !rs->squashed)
 	{
-	  struct RUU_station *rs = RSLINK_RS(node);
 
 	  /* issue operation, both reg and mem deps have been satisfied */
 	  if (!OPERANDS_READY(rs) || !rs->queued
@@ -2723,7 +2982,7 @@ ruu_issue(void)
 			    {
 			      int valid_addr = MD_VALID_ADDR(rs->addr);
 
-			      if (!spec_mode && !valid_addr)
+			      if (!thread_states[rs->thread_id].spec_mode && !valid_addr)
 				sim_invalid_addrs++;
 
 			      /* no! go to the data cache if addr is valid */
@@ -2773,7 +3032,7 @@ ruu_issue(void)
 			  eventq_queue_event(rs, sim_cycle + fu->oplat);
 
 			  /* entered execute stage, indicate in pipe trace */
-			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE, 
+			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE,
 					  rs->ea_comp ? PEV_AGEN : 0);
 			}
 
@@ -2853,17 +3112,17 @@ ruu_issue(void)
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
 static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
-static md_gpr_t spec_regs_R;
+static md_gpr_t spec_regs_R[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
-static md_fpr_t spec_regs_F;
+static md_fpr_t spec_regs_F[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
-static md_ctrl_t spec_regs_C;
+static md_ctrl_t spec_regs_C[MAX_THREADS][MAX_SPEC_LEVELS];
 
 /* dump speculative register state */
 static void
@@ -2876,14 +3135,14 @@ rspec_dump(FILE *stream)			/* output stream */
 
   fprintf(stream, "** speculative register contents **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
-
+  fprintf(stream, "spec_mode: %s\n", thread_states[0].spec_mode ? "t" : "f");
+  int spec_level = 0;
   /* dump speculative integer regs */
   for (i=0; i < MD_NUM_IREGS; i++)
     {
       if (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, i))
 	{
-	  md_print_ireg(spec_regs_R, i, stream);
+	  md_print_ireg(spec_regs_R[0][spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2893,7 +3152,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, i))
 	{
-	  md_print_fpreg(spec_regs_F, i, stream);
+	  md_print_fpreg(spec_regs_F[0][spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2903,7 +3162,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_C, C_BMAP_SZ, i))
 	{
-	  md_print_creg(spec_regs_C, i, stream);
+	  md_print_creg(spec_regs_C[0][spec_level], i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2930,12 +3189,9 @@ static struct spec_mem_ent *bucket_free_list = NULL;
 
 
 /* program counter */
-static md_addr_t pred_PC;
+static md_addr_t pred_PC[MAX_THREADS];
 static md_addr_t recover_PC;
 
-/* fetch unit next fetch address */
-static md_addr_t fetch_regs_PC;
-static md_addr_t fetch_pred_PC;
 
 /* IFETCH -> DISPATCH instruction queue definition */
 struct fetch_rec {
@@ -2944,6 +3200,8 @@ struct fetch_rec {
   struct bpred_update_t dir_update;	/* bpred direction update info */
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
+  int thread_id; /* thread id of the fetched instruction */
+  int squashed; /* is this instruction squashed? */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -2954,17 +3212,20 @@ static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
    all register value copied-on-write bitmasks are reset, and the speculative
    memory hash table is cleared */
 static void
-tracer_recover(void)
+tracer_recover(struct RUU_station *rs_branch)
 {
   int i;
   struct spec_mem_ent *ent, *ent_next;
 
   /* better be in mis-speculative trace generation mode */
-  if (!spec_mode)
+  if (!thread_states[rs_branch->thread_id].spec_mode)
     panic("cannot recover unless in speculative mode");
 
   /* reset to non-speculative trace generation mode */
-  spec_mode = FALSE;
+  thread_states[rs_branch->thread_id].spec_level = rs_branch->spec_level;
+  if (rs_branch->spec_level == -1) {
+    thread_states[rs_branch->thread_id].spec_mode = FALSE;
+  }
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
   BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
@@ -2985,24 +3246,44 @@ tracer_recover(void)
       store_htable[i] = NULL;
     }
 
-  /* if pipetracing, indicate squash of instructions in the inst fetch queue */
-  if (ptrace_active)
-    {
-      while (fetch_num != 0)
-	{
-	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
-	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
-
-	  /* consume instruction from IFETCH -> DISPATCH queue */
-	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-	  fetch_num--;
-	}
+  /* Don't clear the entire fetch queue - just clear the entries associated with this thread */
+  int fetch_index = fetch_head;
+  int visited = 0;
+  while (visited != fetch_num) {
+    int fetch_thread_id = fetch_data[fetch_index].thread_id;
+    if (fetch_thread_id == rs_branch->thread_id || thread_states[fetch_thread_id].parent_fork_counters[rs_branch->thread_id] >= rs_branch->fork_counter) {
+      fetch_data[fetch_index].squashed = TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
     }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+    visited++;
+  }
 
-  /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
-  fetch_pred_PC = fetch_regs_PC = recover_PC;
+  /* if pipetracing, indicate squash of instructions in the inst fetch queue */
+
+  //fprintf(stderr, "Recovery from non-fork in thread (%d)\n", rs_branch->thread_id);
+  thread_states[rs_branch->thread_id].fetch_pred_PC = thread_states[rs_branch->thread_id].fetch_regs_PC = rs_branch->next_PC;
+}
+
+static void
+squash_fetchq_invalids(int thread_id, int fork_counter)
+{
+
+  int fetch_index = fetch_head;
+  int visited = 0;
+  while (visited != fetch_num) {
+    int fetch_thread_id = fetch_data[fetch_index].thread_id;
+    if (fetch_thread_id == thread_id || thread_states[fetch_thread_id].parent_fork_counters[thread_id] >= fork_counter) {
+      fetch_data[fetch_index].squashed = TRUE;
+      if (ptrace_active) {
+        ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
+      }
+    }
+    fetch_index = (fetch_index + 1) & (ruu_ifq_size - 1);
+    visited++;
+  }
 }
 
 /* initialize the speculative instruction state generator state */
@@ -3010,9 +3291,6 @@ static void
 tracer_init(void)
 {
   int i;
-
-  /* initially in non-speculative mode */
-  spec_mode = FALSE;
 
   /* register state is from non-speculative state buffers */
   BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
@@ -3225,7 +3503,7 @@ mspec_dump(FILE *stream)			/* output stream */
 
   fprintf(stream, "** speculative memory contents **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
+  fprintf(stream, "spec_mode: %s\n", thread_states[0].spec_mode ? "t" : "f");
 
   for (i=0; i<STORE_HASH_SIZE; i++)
     {
@@ -3264,7 +3542,7 @@ simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
 #endif
 
   /* else, no error, access memory */
-  if (spec_mode)
+  if (thread_states[0].spec_mode)
     spec_mem_access(mem, cmd, addr, p, nbytes);
   else
     mem_access(mem, cmd, addr, p, nbytes);
@@ -3296,8 +3574,11 @@ ruu_link_idep(struct RUU_station *rs,		/* rs station to link */
       return;
     }
 
+  int spec_mode = rs->spec_mode;
+  int spec_level = rs->spec_level;
+
   /* locate creator of operand */
-  head = CREATE_VECTOR(idep_name);
+  head = CREATE_VECTOR(rs->thread_id, idep_name);
 
   /* any creator? */
   if (!head.rs)
@@ -3342,9 +3623,12 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
   /* initialize output chain to empty list */
   rs->odep_list[odep_num] = NULL;
 
+  int spec_mode = rs->spec_mode;
+  int spec_level = rs->spec_level;
+
   /* indicate this operation is latest creator of ODEP_NAME */
   CVLINK_INIT(cv, rs, odep_num);
-  SET_CREATE_VECTOR(odep_name, cv);
+  SET_CREATE_VECTOR(rs->thread_id, odep_name, cv);
 }
 
 
@@ -3407,13 +3691,13 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* general purpose register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
-				 ? spec_regs_R[N]                       \
+#define GPR(N)                  (spec_mode\
+				 ? spec_regs_R[curr_thread_id][spec_level][N]                       \
 				 : regs.regs_R[N])
 #define SET_GPR(N,EXPR)         (spec_mode				\
-				 ? ((spec_regs_R[N] = (EXPR)),		\
+				 ? ((spec_regs_R[curr_thread_id][spec_level][N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
-				    spec_regs_R[N])			\
+				    spec_regs_R[curr_thread_id][spec_level][N])			\
 				 : (regs.regs_R[N] = (EXPR)))
 
 #if defined(TARGET_PISA)
@@ -3421,57 +3705,57 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.l[(N)]                   \
+#define FPR_L(N)                (spec_mode\
+				 ? spec_regs_F[curr_thread_id][spec_level].l[(N)]                   \
 				 : regs.regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[curr_thread_id][spec_level].l[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.l[(N)])			\
+				    spec_regs_F[curr_thread_id][spec_level].l[(N)])			\
 				 : (regs.regs_F.l[(N)] = (EXPR)))
-#define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.f[(N)]                   \
+#define FPR_F(N)                (spec_mode\
+				 ? spec_regs_F[curr_thread_id][spec_level].f[(N)]                   \
 				 : regs.regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[curr_thread_id][spec_level].f[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.f[(N)])			\
+				    spec_regs_F[curr_thread_id][spec_level].f[(N)])			\
 				 : (regs.regs_F.f[(N)] = (EXPR)))
-#define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.d[(N) >> 1]              \
+#define FPR_D(N)                (spec_mode\
+				 ? spec_regs_F[curr_thread_id][spec_level].d[(N) >> 1]              \
 				 : regs.regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
+				 ? ((spec_regs_F[curr_thread_id][spec_level].d[(N) >> 1] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.d[(N) >> 1])		\
+				    spec_regs_F[curr_thread_id][spec_level].d[(N) >> 1])		\
 				 : (regs.regs_F.d[(N) >> 1] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
-				 ? spec_regs_C.hi			\
+#define HI			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].hi			\
 				 : regs.regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.hi = (EXPR)),		\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].hi = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
-				    spec_regs_C.hi)			\
+				    spec_regs_C[curr_thread_id][spec_level].hi)			\
 				 : (regs.regs_C.hi = (EXPR)))
-#define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
-				 ? spec_regs_C.lo			\
+#define LO			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].lo			\
 				 : regs.regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.lo = (EXPR)),		\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].lo = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
-				    spec_regs_C.lo)			\
+				    spec_regs_C[curr_thread_id][spec_level].lo)			\
 				 : (regs.regs_C.lo = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+#define FCC			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
-				    spec_regs_C.fcc)			\
+				    spec_regs_C[curr_thread_id][spec_level].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #elif defined(TARGET_ALPHA)
@@ -3479,49 +3763,49 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.q[(N)]                   \
+#define FPR_Q(N)		(spec_mode\
+				 ? spec_regs_F[curr_thread_id][spec_level].q[(N)]                   \
 				 : regs.regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	(spec_mode				\
-				 ? ((spec_regs_F.q[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[curr_thread_id][spec_level].q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.q[(N)])			\
+				    spec_regs_F[curr_thread_id][spec_level].q[(N)])			\
 				 : (regs.regs_F.q[(N)] = (EXPR)))
-#define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.d[(N)]			\
+#define FPR(N)			(spec_mode\
+				 ? spec_regs_F[curr_thread_id][spec_level].d[(N)]			\
 				 : regs.regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		(spec_mode				\
-				 ? ((spec_regs_F.d[(N)] = (EXPR)),	\
+				 ? ((spec_regs_F[curr_thread_id][spec_level].d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.d[(N)])			\
+				    spec_regs_F[curr_thread_id][spec_level].d[(N)])			\
 				 : (regs.regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
-				 ? spec_regs_C.fpcr			\
+#define FPCR			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].fpcr			\
 				 : regs.regs_C.fpcr)
 #define SET_FPCR(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fpcr = (EXPR)),	\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
-				    spec_regs_C.fpcr)			\
+				    spec_regs_C[curr_thread_id][spec_level].fpcr)			\
 				 : (regs.regs_C.fpcr = (EXPR)))
-#define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
-				 ? spec_regs_C.uniq			\
+#define UNIQ			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].uniq			\
 				 : regs.regs_C.uniq)
 #define SET_UNIQ(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.uniq = (EXPR)),	\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
-				    spec_regs_C.uniq)			\
+				    spec_regs_C[curr_thread_id][spec_level].uniq)			\
 				 : (regs.regs_C.uniq = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+#define FCC			(spec_mode\
+				 ? spec_regs_C[curr_thread_id][spec_level].fcc			\
 				 : regs.regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs_C[curr_thread_id][spec_level].fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
-				    spec_regs_C.fcc)			\
+				    spec_regs_C[curr_thread_id][spec_level].fcc)			\
 				 : (regs.regs_C.fcc = (EXPR)))
 
 #else
@@ -3586,6 +3870,9 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
     case rt_gpr:
       if (reg < 0 || reg >= MD_NUM_IREGS)
 	return "register number out of range";
+  int spec_mode = thread_states[0].spec_mode;
+  int spec_level = thread_states[0].spec_level;
+  int curr_thread_id = 0;
 
       if (!is_write)
 	{
@@ -3694,6 +3981,80 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
    implementing in-order issue */
 static struct RS_link last_op = RSLINK_NULL_DATA;
 
+/* Checks to see if there's an available thread in order to fork */
+static int
+try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
+  int forking_thread = rs_branch->thread_id;
+  int forking_thread_counter = rs_branch->fork_counter;
+  int fork_spec_level = rs_branch->spec_level;
+
+  int fork_thread_candidate = forking_thread + 1;
+  int has_found_fork_candidate = FALSE;
+  while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < max_threads)) {
+    if (thread_states[fork_thread_candidate].in_use == FALSE) {
+      has_found_fork_candidate = TRUE;
+    } else {
+      fork_thread_candidate ++;
+    }
+  }
+  if (has_found_fork_candidate == FALSE) {
+    fork_thread_candidate = 0;
+    while ((has_found_fork_candidate == FALSE) && (fork_thread_candidate < forking_thread)) {
+      if (thread_states[fork_thread_candidate].in_use == FALSE) {
+        has_found_fork_candidate = TRUE;
+      } else {
+        fork_thread_candidate ++;
+      }
+    }
+  }
+  // If no threads are available, just return.
+  if (has_found_fork_candidate == FALSE) {
+    return FALSE;
+  }
+
+  sim_num_forks++;
+
+ // OHHH! There's an issue here
+  thread_states[fork_thread_candidate].in_use = TRUE;
+  thread_states[fork_thread_candidate].fork_counter = 0;
+  for (int i=0; i < max_threads; i++) {
+    thread_states[fork_thread_candidate].parent_fork_counters[i] = thread_states[rs_branch->thread_id].parent_fork_counters[i];
+  }
+  thread_states[fork_thread_candidate].parent_fork_counters[forking_thread] = forking_thread_counter;
+  thread_states[fork_thread_candidate].fetch_pred_PC = fork_pc;
+  thread_states[fork_thread_candidate].fetch_regs_PC = fork_pc - sizeof(md_inst_t);
+  thread_states[fork_thread_candidate].keep_fetching = TRUE;
+
+  // TODO: fix for later implementation
+
+  /*fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
+          rs_branch->spec_level,
+          rs_branch->spec_mode,
+          fork_thread_candidate,
+          forking_thread);*/
+  if (rs_branch->spec_mode) {
+    thread_states[fork_thread_candidate].spec_mode = TRUE;
+    thread_states[fork_thread_candidate].spec_level = 0;
+    memcpy(spec_create_vector[fork_thread_candidate][0], spec_create_vector[forking_thread][fork_spec_level],
+     MD_TOTAL_REGS * sizeof(struct CV_link));
+    memcpy(spec_create_vector_rt[fork_thread_candidate][0],
+     spec_create_vector_rt[forking_thread][0], MD_TOTAL_REGS*sizeof(tick_t));
+    memcpy(&spec_regs_R[fork_thread_candidate][0], &spec_regs_R[forking_thread][fork_spec_level], sizeof(md_gpr_t));
+    memcpy(&spec_regs_F[fork_thread_candidate][0], &spec_regs_F[forking_thread][fork_spec_level], sizeof(md_fpr_t));
+    memcpy(&spec_regs_C[fork_thread_candidate][0], &spec_regs_C[forking_thread][fork_spec_level], sizeof(md_ctrl_t));
+    sim_num_spec_forks++;
+  } else {
+    thread_states[fork_thread_candidate].spec_mode = FALSE;
+    thread_states[fork_thread_candidate].spec_level = -1;
+    sim_num_nonspec_forks++;
+  }
+  rs_branch->triggers_fork = TRUE;
+  rs_branch->fork_id = fork_thread_candidate;
+
+  return TRUE;
+}
+
+
 /* dispatch instructions from the IFETCH -> DISPATCH queue: instructions are
    first decoded, then they allocated RUU (and LSQ for load/stores) resources
    and input and output dependence chains are updated accordingly */
@@ -3733,7 +4094,7 @@ ruu_dispatch(void)
 	 /* insts still available from fetch unit? */
 	 && fetch_num != 0
 	 /* on an acceptable trace path */
-	 && (ruu_include_spec || !spec_mode))
+	 && (ruu_include_spec))
     {
       /* if issuing in-order, block until last op issues if inorder issue */
       if (ruu_inorder_issue
@@ -3743,14 +4104,24 @@ ruu_dispatch(void)
 	  /* stall until last operation is ready to issue */
 	  break;
 	}
+      if (fetch_data[fetch_head].squashed == TRUE) {
+        fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
+        fetch_num--;
+        continue;
+      }
+
+      int curr_thread_id = fetch_data[fetch_head].thread_id;
+      int spec_mode = thread_states[curr_thread_id].spec_mode;
+      int spec_level = thread_states[curr_thread_id].spec_level;
 
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       inst = fetch_data[fetch_head].IR;
       regs.regs_PC = fetch_data[fetch_head].regs_PC;
-      pred_PC = fetch_data[fetch_head].pred_PC;
+      pred_PC[curr_thread_id] = fetch_data[fetch_head].pred_PC;
       dir_update_ptr = &(fetch_data[fetch_head].dir_update);
       stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
       pseq = fetch_data[fetch_head].ptrace_seq;
+
 
       /* decode the inst */
       MD_SET_OPCODE(op, inst);
@@ -3771,9 +4142,9 @@ ruu_dispatch(void)
 	}
 
       /* maintain $r0 semantics (in spec and non-spec space) */
-      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
+      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[curr_thread_id][spec_level][MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
+      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F[curr_thread_id][spec_level].d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
       if (!spec_mode)
@@ -3844,8 +4215,12 @@ ruu_dispatch(void)
         }
 
       if (fault != md_fault_none)
-	fatal("non-speculative fault (%d) detected @ 0x%08p",
-	      fault, regs.regs_PC);
+	fatal("Num insn (%d) non-speculative fault (%d) for thread (%d) detected @ 0x%08p",
+	      sim_num_insn, fault, curr_thread_id, regs.regs_PC);
+
+        if (sim_num_insn == 384) {
+          //fatal("Breaking for testing purposed");
+        }
 
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
@@ -3865,11 +4240,11 @@ ruu_dispatch(void)
 	}
 
       br_taken = (regs.regs_NPC != (regs.regs_PC + sizeof(md_inst_t)));
-      br_pred_taken = (pred_PC != (regs.regs_PC + sizeof(md_inst_t)));
+      br_pred_taken = (pred_PC[curr_thread_id] != (regs.regs_PC + sizeof(md_inst_t)));
 
-      if ((pred_PC != regs.regs_NPC && pred_perfect)
+      if ((pred_PC[curr_thread_id] != regs.regs_NPC && pred_perfect)
 	  || ((MD_OP_FLAGS(op) & (F_CTRL|F_DIRJMP)) == (F_CTRL|F_DIRJMP)
-	      && target_PC != pred_PC && br_pred_taken))
+	      && target_PC != pred_PC[curr_thread_id] && br_pred_taken))
 	{
 	  /* Either 1) we're simulating perfect prediction and are in a
              mis-predict state and need to patch up, or 2) We're not simulating
@@ -3879,10 +4254,10 @@ ruu_dispatch(void)
              This is just like calling fetch_squash() except we pre-anticipate
              the updates to the fetch values at the end of this function.  If
              case #2, also charge a mispredict penalty for redirecting fetch */
-	  fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
+	  thread_states[curr_thread_id].fetch_pred_PC = thread_states[curr_thread_id].fetch_regs_PC = regs.regs_NPC;
 	  /* was: if (pred_perfect) */
 	  if (pred_perfect)
-	    pred_PC = regs.regs_NPC;
+	    pred_PC[curr_thread_id] = regs.regs_NPC;
 
 	  fetch_head = (ruu_ifq_size-1);
 	  fetch_num = 1;
@@ -3893,6 +4268,9 @@ ruu_dispatch(void)
 
 	  fetch_redirected = TRUE;
 	}
+      if (!spec_mode) {
+        //fprintf(stderr, "current correct pc: (0x%08p)\n", regs.regs_PC);
+      }
 
       /* is this a NOP */
       if (op != MD_NOP_OP)
@@ -3918,18 +4296,23 @@ ruu_dispatch(void)
 	  rs->IR = inst;
 	  rs->op = op;
 	  rs->PC = regs.regs_PC;
-	  rs->next_PC = regs.regs_NPC; rs->pred_PC = pred_PC;
+	  rs->next_PC = regs.regs_NPC; rs->pred_PC = pred_PC[curr_thread_id];
 	  rs->in_LSQ = FALSE;
 	  rs->ea_comp = FALSE;
 	  rs->recover_inst = FALSE;
           rs->dir_update = *dir_update_ptr;
 	  rs->stack_recover_idx = stack_recover_idx;
 	  rs->spec_mode = spec_mode;
+    rs->spec_level = spec_level;
 	  rs->addr = 0;
 	  /* rs->tag is already set */
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
+    rs->thread_id = curr_thread_id;
+    rs->squashed = FALSE;
+    rs->fork_counter = thread_states[curr_thread_id].fork_counter;
+    rs->triggers_fork = FALSE;
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -3944,7 +4327,7 @@ ruu_dispatch(void)
 	      lsq->IR = inst;
 	      lsq->op = op;
 	      lsq->PC = regs.regs_PC;
-	      lsq->next_PC = regs.regs_NPC; lsq->pred_PC = pred_PC;
+	      lsq->next_PC = regs.regs_NPC; lsq->pred_PC = pred_PC[curr_thread_id];
 	      lsq->in_LSQ = TRUE;
 	      lsq->ea_comp = FALSE;
 	      lsq->recover_inst = FALSE;
@@ -3952,11 +4335,16 @@ ruu_dispatch(void)
 	      lsq->dir_update.pmeta = NULL;
 	      lsq->stack_recover_idx = 0;
 	      lsq->spec_mode = spec_mode;
+        lsq->spec_level = spec_level;
 	      lsq->addr = addr;
 	      /* lsq->tag is already set */
 	      lsq->seq = ++inst_seq;
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
 	      lsq->ptrace_seq = ptrace_seq++;
+        lsq->thread_id = curr_thread_id;
+        lsq->squashed = FALSE;
+        lsq->fork_counter = thread_states[curr_thread_id].fork_counter;
+        lsq->triggers_fork = FALSE;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4069,27 +4457,66 @@ ruu_dispatch(void)
 			       /* actual target address */regs.regs_NPC,
 			       /* taken? */regs.regs_NPC != (regs.regs_PC +
 						       sizeof(md_inst_t)),
-			       /* pred taken? */pred_PC != (regs.regs_PC +
+			       /* pred taken? */pred_PC[curr_thread_id] != (regs.regs_PC +
 							sizeof(md_inst_t)),
-			       /* correct pred? */pred_PC == regs.regs_NPC,
+			       /* correct pred? */pred_PC[curr_thread_id] == regs.regs_NPC,
 			       /* opcode */op,
 			       /* predictor update ptr */&rs->dir_update);
 		}
 	    }
 
 	  /* is the trace generator trasitioning into mis-speculation mode? */
-	  if (pred_PC != regs.regs_NPC && !fetch_redirected)
+	  if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected)
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
-	      spec_mode = TRUE;
+        thread_states[curr_thread_id].spec_mode = TRUE;
+        thread_states[curr_thread_id].spec_level = 0;
+        spec_level = 0;
+        memcpy(spec_create_vector[curr_thread_id][spec_level], create_vector,
+  			 MD_TOTAL_REGS * sizeof(struct CV_link));
+  		  memcpy(spec_create_vector_rt[curr_thread_id][spec_level],
+  			 create_vector_rt, MD_TOTAL_REGS*sizeof(tick_t));
+        memcpy(&spec_regs_R[curr_thread_id][spec_level], &regs.regs_R, sizeof(md_gpr_t));
+        memcpy(&spec_regs_F[curr_thread_id][spec_level], &regs.regs_F, sizeof(md_fpr_t));
+        memcpy(&spec_regs_C[curr_thread_id][spec_level], &regs.regs_C, sizeof(md_ctrl_t));
 	      rs->recover_inst = TRUE;
 	      recover_PC = regs.regs_NPC;
+        //fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
 	    }
-	}
+	} else {
+    /* is the trace generator trasitioning into mis-speculation mode? */
+	  if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected)
+	    {
+	      /* entering mis-speculation mode, indicate this and save PC */
+        spec_level++;
+        thread_states[curr_thread_id].spec_level = spec_level;
+        memcpy(spec_create_vector[curr_thread_id][spec_level], spec_create_vector[curr_thread_id][spec_level-1],
+  			 MD_TOTAL_REGS * sizeof(struct CV_link));
+  		  memcpy(spec_create_vector_rt[curr_thread_id][spec_level],
+  			 spec_create_vector_rt[curr_thread_id][spec_level-1], MD_TOTAL_REGS*sizeof(tick_t));
+        memcpy(&spec_regs_R[curr_thread_id][spec_level], &spec_regs_R[curr_thread_id][spec_level-1], sizeof(md_gpr_t));
+        memcpy(&spec_regs_F[curr_thread_id][spec_level], &spec_regs_F[curr_thread_id][spec_level-1], sizeof(md_fpr_t));
+        memcpy(&spec_regs_C[curr_thread_id][spec_level], &spec_regs_C[curr_thread_id][spec_level-1], sizeof(md_ctrl_t));
+	      rs->recover_inst = TRUE;
+	      recover_PC = regs.regs_NPC;
+        //fprintf(stderr, "triggering recover insn, thread:%d, spec_level:%d \n", curr_thread_id, spec_level);
+	    }
+  }
+
+      /* Now fork if possible */
+      /* Just fork when not in spec mode */
+      if (pred_PC[curr_thread_id] != regs.regs_NPC && !fetch_redirected) {
+        int successful_fork = try_to_fork(regs.regs_NPC, rs);
+        if (successful_fork) {
+         thread_states[curr_thread_id].fork_counter++;
+         rs->fork_counter = thread_states[curr_thread_id].fork_counter;
+         //fprintf(stderr, "Does this trigger fork: %d\n", rs->triggers_fork);
+        }
+      }
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
-		      (pred_PC != regs.regs_NPC) ? PEV_MPOCCURED : 0);
+		      (pred_PC[curr_thread_id] != regs.regs_NPC) ? PEV_MPOCCURED : 0);
       if (op == MD_NOP_OP)
 	{
 	  /* end of the line */
@@ -4118,10 +4545,10 @@ ruu_dispatch(void)
 
       /* check for DLite debugger entry condition */
       made_check = TRUE;
-      if (dlite_check_break(pred_PC,
+      if (dlite_check_break(pred_PC[curr_thread_id],
 			    is_write ? ACCESS_WRITE : ACCESS_READ,
 			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs.regs_PC, pred_PC, sim_cycle, &regs, mem);
+	dlite_main(regs.regs_PC, pred_PC[curr_thread_id], sim_cycle, &regs, mem);
     }
 
   /* need to enter DLite at least once per cycle */
@@ -4166,11 +4593,11 @@ fetch_dump(FILE *stream)			/* output stream */
 
   fprintf(stream, "** fetch stage state **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
+  fprintf(stream, "spec_mode: %s\n", thread_states[0].spec_mode ? "t" : "f");
   myfprintf(stream, "pred_PC: 0x%08p, recover_PC: 0x%08p\n",
-	    pred_PC, recover_PC);
+	    pred_PC[0], recover_PC);
   myfprintf(stream, "fetch_regs_PC: 0x%08p, fetch_pred_PC: 0x%08p\n",
-	    fetch_regs_PC, fetch_pred_PC);
+	    thread_states[0].fetch_regs_PC, thread_states[0].fetch_pred_PC);
   fprintf(stream, "\n");
 
   fprintf(stream, "** fetch queue contents **\n");
@@ -4214,16 +4641,44 @@ ruu_fetch(void)
        && !done;
        i++)
     {
+      // If we've reached our quota of fetches for this thread, find the next thread to run
+      if (fetches_left_for_thread == 0 || thread_states[current_fetching_thread].in_use == FALSE || thread_states[current_fetching_thread].keep_fetching == FALSE) {
+        int has_found_new_thread = FALSE;
+        current_fetching_thread++;
+        while ((has_found_new_thread == FALSE) && (current_fetching_thread < max_threads)) {
+          if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+            has_found_new_thread = TRUE;
+          } else {
+            current_fetching_thread++;
+          }
+        }
+        if (has_found_new_thread == FALSE) {
+          current_fetching_thread = 0;
+          while (has_found_new_thread == FALSE) {
+            if (current_fetching_thread == max_threads) panic ("No threads available");
+            if (thread_states[current_fetching_thread].in_use == TRUE && thread_states[current_fetching_thread].keep_fetching == TRUE) {
+              has_found_new_thread = TRUE;
+            } else {
+              current_fetching_thread++;
+            }
+          }
+        }
+        //fprintf(stderr, "Is thread 0 in use?: %d\n", thread_states[0].in_use);
+        //fprintf(stderr, "current fetching thread: %d\n", current_fetching_thread);
+        fetches_left_for_thread = max_fetches_before_switch;
+      }
+      fetches_left_for_thread--;
+
       /* fetch an instruction at the next predicted fetch address */
-      fetch_regs_PC = fetch_pred_PC;
+      thread_states[current_fetching_thread].fetch_regs_PC = thread_states[current_fetching_thread].fetch_pred_PC;
 
       /* is this a bogus text address? (can happen on mis-spec path) */
-      if (ld_text_base <= fetch_regs_PC
-	  && fetch_regs_PC < (ld_text_base+ld_text_size)
-	  && !(fetch_regs_PC & (sizeof(md_inst_t)-1)))
+      if (ld_text_base <= thread_states[current_fetching_thread].fetch_regs_PC
+	  && thread_states[current_fetching_thread].fetch_regs_PC < (ld_text_base+ld_text_size)
+	  && !(thread_states[current_fetching_thread].fetch_regs_PC & (sizeof(md_inst_t)-1)))
 	{
 	  /* read instruction from memory */
-	  MD_FETCH_INST(inst, mem, fetch_regs_PC);
+	  MD_FETCH_INST(inst, mem, thread_states[current_fetching_thread].fetch_regs_PC);
 
 	  /* address is within program text, read instruction from memory */
 	  lat = cache_il1_lat;
@@ -4231,7 +4686,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(cache_il1, Read, IACOMPRESS(thread_states[current_fetching_thread].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
@@ -4243,7 +4698,7 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(itlb, Read, IACOMPRESS(thread_states[current_fetching_thread].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
@@ -4277,14 +4732,14 @@ ruu_fetch(void)
 
 	  /* pre-decode instruction, used for bpred stats recording */
 	  MD_SET_OPCODE(op, inst);
-	  
+
 	  /* get the next predicted fetch address; only use branch predictor
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
 	  if (MD_OP_FLAGS(op) & F_CTRL)
-	    fetch_pred_PC =
+	    thread_states[current_fetching_thread].fetch_pred_PC =
 	      bpred_lookup(pred,
-			   /* branch address */fetch_regs_PC,
+			   /* branch address */thread_states[current_fetching_thread].fetch_regs_PC,
 			   /* target address *//* FIXME: not computed */0,
 			   /* opcode */op,
 			   /* call? */MD_IS_CALL(op),
@@ -4292,13 +4747,13 @@ ruu_fetch(void)
 			   /* updt */&(fetch_data[fetch_tail].dir_update),
 			   /* RSB index */&stack_recover_idx);
 	  else
-	    fetch_pred_PC = 0;
+	    thread_states[current_fetching_thread].fetch_pred_PC = 0;
 
 	  /* valid address returned from branch predictor? */
-	  if (!fetch_pred_PC)
+	  if (!thread_states[current_fetching_thread].fetch_pred_PC)
 	    {
 	      /* no predicted taken target, attempt not taken target */
-	      fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	      thread_states[current_fetching_thread].fetch_pred_PC = thread_states[current_fetching_thread].fetch_regs_PC + sizeof(md_inst_t);
 	    }
 	  else
 	    {
@@ -4312,15 +4767,17 @@ ruu_fetch(void)
 	{
 	  /* no predictor, just default to predict not taken, and
 	     continue fetching instructions linearly */
-	  fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	  thread_states[current_fetching_thread].fetch_pred_PC = thread_states[current_fetching_thread].fetch_regs_PC + sizeof(md_inst_t);
 	}
 
       /* commit this instruction to the IFETCH -> DISPATCH queue */
       fetch_data[fetch_tail].IR = inst;
-      fetch_data[fetch_tail].regs_PC = fetch_regs_PC;
-      fetch_data[fetch_tail].pred_PC = fetch_pred_PC;
+      fetch_data[fetch_tail].regs_PC = thread_states[current_fetching_thread].fetch_regs_PC;
+      fetch_data[fetch_tail].pred_PC = thread_states[current_fetching_thread].fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].squashed = FALSE;
+      fetch_data[fetch_tail].thread_id = current_fetching_thread;
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
@@ -4460,6 +4917,9 @@ sim_main(void)
 
       for (icount=0; icount < fastfwd_count; icount++)
 	{
+    int spec_mode = FALSE;
+    int spec_level = -1;
+    int curr_thread_id = 0;
 	  /* maintain $r0 semantics */
 	  regs.regs_R[MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
@@ -4522,8 +4982,8 @@ sim_main(void)
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
-  fetch_pred_PC = regs.regs_PC;
+  thread_states[current_fetching_thread].fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
+  thread_states[current_fetching_thread].fetch_pred_PC = regs.regs_PC;
   regs.regs_PC = regs.regs_PC - sizeof(md_inst_t);
 
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
