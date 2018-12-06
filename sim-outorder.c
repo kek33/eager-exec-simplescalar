@@ -2284,7 +2284,7 @@ ruu_commit(void)
 
       // The forked thread off this is the correct one, so this can retire now
       if (rs->triggers_fork && (rs->pred_PC != rs->next_PC)) {
-        fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
+        //fprintf(stderr, "Finished cleaning up thread (%d) after mispred fork\n", rs->thread_id);
         thread_states[rs->thread_id].in_use = FALSE;
         for (int n=0; n<max_threads; n++) {
           thread_states[max_threads].parent_fork_counters[rs->thread_id] = -1;
@@ -2561,7 +2561,7 @@ ruu_writeback(void)
           ruu_recover(rs - RUU, rs->thread_id, rs->fork_counter);
           squash_fetchq_invalids(rs->thread_id, rs->fork_counter);
           thread_states[rs->thread_id].keep_fetching = FALSE;
-          fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
+          //fprintf(stderr, "Mispredicted forking branch on thread (%d)\n", rs->thread_id);
           int test_thread;
           for (test_thread = 0; test_thread < max_threads; test_thread++) {
             // really might need another check here
@@ -2609,7 +2609,7 @@ ruu_writeback(void)
     int test_thread;
     for (test_thread = 0; test_thread < max_threads; test_thread++) {
       // really might need another check here
-      if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+      if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter && test_thread!=rs->thread_id) {
         //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
         // Free these threads and reset their parent fork pointers
         thread_states[test_thread].in_use = FALSE;
@@ -4025,11 +4025,11 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
 
   // TODO: fix for later implementation
 
-  fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
+  /*fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
           rs_branch->spec_level,
           rs_branch->spec_mode,
           fork_thread_candidate,
-          forking_thread);
+          forking_thread);*/
   if (rs_branch->spec_mode) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
