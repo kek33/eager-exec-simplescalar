@@ -2606,6 +2606,19 @@ ruu_writeback(void)
 	  tracer_recover(rs);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
 
+    int test_thread;
+    for (test_thread = 0; test_thread < max_threads; test_thread++) {
+      // really might need another check here
+      if (thread_states[test_thread].parent_fork_counters[rs->thread_id] >= rs->fork_counter) {
+        //fprintf(stderr, "Entirely wiping out thread (%d)\n", test_thread);
+        // Free these threads and reset their parent fork pointers
+        thread_states[test_thread].in_use = FALSE;
+        for (int n = 0; n < max_threads; n++) {
+          thread_states[test_thread].parent_fork_counters[n] = -1;
+        }
+      }
+    }
+
 	  /* stall fetch until I-fetch and I-decode recover */
 	  ruu_fetch_issue_delay = ruu_branch_penalty;
 
@@ -3235,7 +3248,8 @@ tracer_recover(struct RUU_station *rs_branch)
   int fetch_index = fetch_head;
   int visited = 0;
   while (visited != fetch_num) {
-    if (fetch_data[fetch_index].thread_id == rs_branch->thread_id) {
+    int fetch_thread_id = fetch_data[fetch_index].thread_id;
+    if (fetch_thread_id == rs_branch->thread_id || thread_states[fetch_thread_id].parent_fork_counters[rs_branch->thread_id] >= rs_branch->fork_counter) {
       fetch_data[fetch_index].squashed = TRUE;
       if (ptrace_active) {
         ptrace_endinst(fetch_data[fetch_index].ptrace_seq);
@@ -4010,12 +4024,12 @@ try_to_fork(md_addr_t fork_pc, struct RUU_station *rs_branch) {
   thread_states[fork_thread_candidate].keep_fetching = TRUE;
 
   // TODO: fix for later implementation
-  /*
+
   fprintf(stderr, "Forking occurs, curr spec level (%d), curr spec mode (%d), thread (%d) forked from (%d)\n",
           rs_branch->spec_level,
           rs_branch->spec_mode,
           fork_thread_candidate,
-          forking_thread);*/
+          forking_thread);
   if (rs_branch->spec_mode) {
     thread_states[fork_thread_candidate].spec_mode = TRUE;
     thread_states[fork_thread_candidate].spec_level = 0;
