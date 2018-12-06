@@ -2574,6 +2574,7 @@ ruu_writeback(void)
               }
             }
           }
+          thread_states[rs->thread_id].in_use = TRUE;
           // TODO: tracer recovery - we should be squashing IFQ instructions with this thread id
         } else {
           panic("This should not be called at the moment");
