@@ -2619,6 +2619,7 @@ ruu_writeback(void)
         }
       }
     }
+    thread_states[rs->thread_id].keep_fetching = TRUE;
 
 	  /* stall fetch until I-fetch and I-decode recover */
 	  ruu_fetch_issue_delay = ruu_branch_penalty;
